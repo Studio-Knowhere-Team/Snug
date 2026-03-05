@@ -1,0 +1,34 @@
+name: Snug
+options:
+  bundleIdPrefix: com.snug
+  deploymentTarget:
+    macOS: "14.0"
+  xcodeVersion: "16.0"
+  generateEmptyDirectories: true
+
+packages:
+  HotKey:
+    url: https://github.com/soffes/HotKey
+    from: "0.2.1"
+
+targets:
+  Snug:
+    type: application
+    platform: macOS
+    sources:
+      - CompressBar
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.snug.Snug
+        PRODUCT_NAME: Snug
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        INFOPLIST_FILE: CompressBar/Info.plist
+        CODE_SIGN_ENTITLEMENTS: CompressBar/Snug.entitlements
+        SWIFT_VERSION: "6.0"
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        GENERATE_INFOPLIST_FILE: false
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        SWIFT_STRICT_CONCURRENCY: complete
+    dependencies:
+      - package: HotKey
