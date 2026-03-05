@@ -47,6 +47,9 @@ final class StatusBarController: NSObject {
     /// Pre-resolved info (name + icon) from when items were still visible on screen
     private var cachedHiddenItemInfo: [HiddenItemInfo] = []
 
+    /// Whether we've already run the AX capabilities dump (one-shot)
+    private var didDumpAXCapabilities = false
+
     /// Whether the current display has a notch
     private var hasNotch: Bool = false
 
@@ -499,6 +502,12 @@ final class StatusBarController: NSObject {
             snugLog(" collapseMenuBar: resolved %d item names: %@",
                   cachedHiddenItemInfo.count,
                   cachedHiddenItemInfo.map { $0.name }.joined(separator: ", "))
+        }
+
+        // One-shot: dump all AX capabilities for menu bar extras
+        if !didDumpAXCapabilities && AccessibilityMenuBarHelper.isGranted {
+            didDumpAXCapabilities = true
+            AccessibilityMenuBarHelper.dumpAXCapabilities()
         }
 
         isCollapsed = true

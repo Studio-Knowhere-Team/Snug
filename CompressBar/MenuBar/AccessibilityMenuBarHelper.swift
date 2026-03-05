@@ -213,6 +213,120 @@ enum AccessibilityMenuBarHelper {
         }
     }
 
+    // MARK: - Debug Dump
+
+    /// Log ALL available AX actions and attributes for every menu bar extra.
+    /// Call once to discover what macOS exposes on these elements.
+    static func dumpAXCapabilities() {
+        guard isGranted else {
+            snugLog("dumpAXCapabilities: AX not granted")
+            return
+        }
+        guard let children = extrasMenuBarChildren() else {
+            snugLog("dumpAXCapabilities: no extras menu bar children")
+            return
+        }
+
+        snugLog("=== AX CAPABILITIES DUMP (%d children) ===", children.count)
+
+        for (i, child) in children.enumerated() {
+            let role = axStringAttribute(child, kAXRoleAttribute) ?? "?"
+            let subrole = axStringAttribute(child, kAXSubroleAttribute) ?? "?"
+            guard role == "AXMenuBarItem" && subrole == "AXMenuExtra" else { continue }
+
+            let frame = axFrame(of: child)
+            let info = resolveElement(child, frame: frame)
+            let name = info?.name ?? "unknown"
+
+            snugLog("--- Item[%d]: '%@' at (%.0f, %.0f) ---", i, name, frame.origin.x, frame.origin.y)
+
+            // Dump all attribute names
+            var attrNames: CFArray?
+            if AXUIElementCopyAttributeNames(child, &attrNames) == .success,
+               let names = attrNames as? [String] {
+                snugLog("  ATTRIBUTES (%d):", names.count)
+                for attr in names.sorted() {
+                    // Read the value for each attribute
+                    var value: AnyObject?
+                    let result = AXUIElementCopyAttributeValue(child, attr as CFString, &value)
+                    if result == .success, let value {
+                        let desc = describeAXValue(value, attribute: attr)
+                        snugLog("    %@ = %@", attr, desc)
+                    } else {
+                        snugLog("    %@ (error=%d)", attr, result.rawValue)
+                    }
+                }
+            } else {
+                snugLog("  ATTRIBUTES: <failed to copy>")
+            }
+
+            // Dump all action names
+            var actionNames: CFArray?
+            if AXUIElementCopyActionNames(child, &actionNames) == .success,
+               let actions = actionNames as? [String] {
+                snugLog("  ACTIONS (%d): %@", actions.count, actions.joined(separator: ", "))
+
+                // Also get action descriptions
+                for action in actions {
+                    var desc: CFString?
+                    if AXUIElementCopyActionDescription(child, action as CFString, &desc) == .success,
+                       let desc {
+                        snugLog("    %@ — \"%@\"", action, desc as String)
+                    }
+                }
+            } else {
+                snugLog("  ACTIONS: <failed to copy>")
+            }
+
+            // Check if position is settable
+            var settable: DarwinBoolean = false
+            if AXUIElementIsAttributeSettable(child, kAXPositionAttribute as CFString, &settable) == .success {
+                snugLog("  AXPosition settable: %@", settable.boolValue ? "YES" : "NO")
+            }
+            if AXUIElementIsAttributeSettable(child, kAXSizeAttribute as CFString, &settable) == .success {
+                snugLog("  AXSize settable: %@", settable.boolValue ? "YES" : "NO")
+            }
+
+            // Check parameterized attributes (some elements have these)
+            var paramAttrNames: CFArray?
+            if AXUIElementCopyParameterizedAttributeNames(child, &paramAttrNames) == .success,
+               let paramNames = paramAttrNames as? [String], !paramNames.isEmpty {
+                snugLog("  PARAMETERIZED ATTRIBUTES (%d): %@", paramNames.count, paramNames.joined(separator: ", "))
+            }
+        }
+
+        snugLog("=== END AX CAPABILITIES DUMP ===")
+    }
+
+    /// Produce a short string description of an AX attribute value.
+    private static func describeAXValue(_ value: AnyObject, attribute: String) -> String {
+        if let str = value as? String {
+            return "\"\(str)\""
+        }
+        if let num = value as? NSNumber {
+            return num.stringValue
+        }
+        if let arr = value as? [AnyObject] {
+            return "[\(arr.count) items]"
+        }
+        if CFGetTypeID(value) == AXValueGetTypeID() {
+            let axVal = value as! AXValue
+            var point = CGPoint.zero
+            var size = CGSize.zero
+            var rect = CGRect.zero
+            if AXValueGetValue(axVal, .cgPoint, &point) {
+                return String(format: "(%.0f, %.0f)", point.x, point.y)
+            }
+            if AXValueGetValue(axVal, .cgSize, &size) {
+                return String(format: "%.0f×%.0f", size.width, size.height)
+            }
+            if AXValueGetValue(axVal, .cgRect, &rect) {
+                return String(format: "(%.0f,%.0f,%.0f,%.0f)", rect.origin.x, rect.origin.y, rect.width, rect.height)
+            }
+        }
+        return String(describing: value)
+    }
+
     // MARK: - Private
 
     /// Try to obtain the AXExtrasMenuBar children from multiple candidate processes.
