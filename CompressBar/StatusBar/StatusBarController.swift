@@ -53,6 +53,10 @@ final class StatusBarController: NSObject {
     /// The frame of the item whose menu we opened (for polling AX)
     private var openedMenuItemFrame: CGRect?
 
+    /// The name of the item whose menu we opened (for name-based polling
+    /// when position-based isMenuOpen fails, e.g. behind-notch items)
+    private var openedMenuItemName: String?
+
     /// Number of items that couldn't fit in the safe area (behind notch)
     private var overflowCount: Int = 0
 
@@ -891,6 +895,7 @@ final class StatusBarController: NSObject {
                 if AccessibilityMenuBarHelper.pressItem(at: pressFrame) {
                     NSLog("[Snug] hiddenItemClicked: partial expansion + position press succeeded for '%@'", itemName)
                     self.openedMenuItemFrame = pressFrame
+                    self.openedMenuItemName = itemName
                     self.startMenuDismissalPolling()
                 } else {
                     // Partial expansion failed — fall through to full expansion
@@ -923,6 +928,7 @@ final class StatusBarController: NSObject {
                AccessibilityMenuBarHelper.pressItem(at: actual.frame) {
                 NSLog("[Snug] fullExpandAndPress: position press (windowID) succeeded for '%@'", itemName)
                 self.openedMenuItemFrame = actual.frame
+                self.openedMenuItemName = itemName
                 self.startMenuDismissalPolling()
                 return
             }
@@ -932,6 +938,7 @@ final class StatusBarController: NSObject {
                AccessibilityMenuBarHelper.pressItem(at: naturalFrame) {
                 NSLog("[Snug] fullExpandAndPress: position press (natural frame) succeeded for '%@'", itemName)
                 self.openedMenuItemFrame = naturalFrame
+                self.openedMenuItemName = itemName
                 self.startMenuDismissalPolling()
                 return
             }
@@ -945,6 +952,7 @@ final class StatusBarController: NSObject {
                 NSLog("[Snug] fullExpandAndPress: name-based press succeeded for '%@' at (%.0f,%.0f)",
                       itemName, pressedFrame.origin.x, pressedFrame.origin.y)
                 self.openedMenuItemFrame = pressedFrame
+                self.openedMenuItemName = itemName
                 self.startMenuDismissalPolling()
                 return
             }
@@ -1012,10 +1020,20 @@ final class StatusBarController: NSObject {
                 Task { @MainActor in
                     guard let self else { return }
 
-                    // Check if the menu is still open
+                    // Check if the menu is still open — try position-based first,
+                    // fall back to name-based for items behind the notch where
+                    // position-based lookup fails.
                     if let frame = self.openedMenuItemFrame,
                        AccessibilityMenuBarHelper.isMenuOpen(at: frame) {
                         return
+                    }
+
+                    // Position-based check failed — try name-based
+                    if let name = self.openedMenuItemName {
+                        let screenY = self.toggleItem.button?.window?.frame.midY ?? 12
+                        if AccessibilityMenuBarHelper.isMenuOpenByName(name, screenY: screenY) {
+                            return
+                        }
                     }
 
                     // Menu closed — re-collapse
@@ -1029,6 +1047,7 @@ final class StatusBarController: NSObject {
         menuPollTimer?.invalidate()
         menuPollTimer = nil
         openedMenuItemFrame = nil
+        openedMenuItemName = nil
 
         // Small delay so any menu action can complete
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
@@ -1078,5 +1097,6 @@ final class StatusBarController: NSObject {
         menuPollTimer?.invalidate()
         menuPollTimer = nil
         openedMenuItemFrame = nil
+        openedMenuItemName = nil
     }
 }

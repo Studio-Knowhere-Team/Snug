@@ -251,6 +251,44 @@ enum AccessibilityMenuBarHelper {
         return !childArray.isEmpty
     }
 
+    /// Check whether a menu bar item's menu is open using AX tree traversal (name-based).
+    /// Unlike `isMenuOpen(at:)`, this works for items behind the notch because it
+    /// doesn't depend on screen position for element discovery.
+    static func isMenuOpenByName(_ name: String, screenY: CGFloat) -> Bool {
+        guard isGranted else { return false }
+        guard let children = extrasMenuBarChildren() else { return false }
+
+        let targetBase = stripCountSuffix(name)
+
+        for child in children {
+            let role = axStringAttribute(child, kAXRoleAttribute)
+            let subrole = axStringAttribute(child, kAXSubroleAttribute)
+            guard role == "AXMenuBarItem" && subrole == "AXMenuExtra" else { continue }
+
+            let frame = axFrame(of: child)
+            guard abs(frame.midY - screenY) < 30 else { continue }
+
+            guard let info = resolveElement(child, frame: frame) else { continue }
+            let childBase = stripCountSuffix(info.name)
+
+            if childBase == targetBase {
+                // Check if this element has children (the open menu)
+                var childrenValue: AnyObject?
+                let childResult = AXUIElementCopyAttributeValue(
+                    child, kAXChildrenAttribute as CFString, &childrenValue
+                )
+                if childResult == .success,
+                   let childArray = childrenValue as? [AXUIElement],
+                   !childArray.isEmpty {
+                    return true
+                }
+                return false
+            }
+        }
+
+        return false
+    }
+
     // MARK: - Private
 
     /// Try to obtain the AXExtrasMenuBar children from multiple candidate processes.
