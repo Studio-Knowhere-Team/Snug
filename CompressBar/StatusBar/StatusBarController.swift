@@ -584,24 +584,39 @@ final class StatusBarController: NSObject {
 
             if !newItems.isEmpty {
                 let newInfo = Self.resolveItemsByProcess(newItems)
-                NSLog("[Snug] postCollapseDiscovery: resolved %d new items: %@",
+                NSLog("[Snug] postCollapseDiscovery: resolved %d new items by process: %@",
                       newInfo.count, newInfo.map { $0.name }.joined(separator: ", "))
                 let existingNames = Set(self.cachedHiddenItemInfo.map { self.baseName(of: $0.name) })
                 NSLog("[Snug] postCollapseDiscovery: existing names: %@",
                       existingNames.sorted().joined(separator: ", "))
                 let uniqueNew = newInfo.filter { !existingNames.contains(self.baseName(of: $0.name)) }
-                NSLog("[Snug] postCollapseDiscovery: uniqueNew=%d", uniqueNew.count)
+                NSLog("[Snug] postCollapseDiscovery: uniqueNew from process=%d", uniqueNew.count)
                 if !uniqueNew.isEmpty {
                     self.cachedHiddenItemInfo.append(contentsOf: uniqueNew)
                     self.cachedHiddenItemInfo.sort { $0.name < $1.name }
-                    NSLog("[Snug] postCollapseDiscovery: cachedHiddenItemInfo now %d: %@",
-                          self.cachedHiddenItemInfo.count,
-                          self.cachedHiddenItemInfo.map { $0.name }.joined(separator: ", "))
                 }
             }
 
-            NSLog("[Snug] postCollapseDiscovery DONE: cachedHiddenItemInfo=%d, postCollapseItemCount=%d",
-                  self.cachedHiddenItemInfo.count, self.postCollapseItemCount)
+            // Also try AX tree enumeration to discover items that process-based
+            // resolution misses (e.g., Control Centre-hosted third-party items).
+            // Use the toggle position as the dividing line — everything to its left is "hidden".
+            let toggleX = self.toggleItem.button?.window?.frame.origin.x ?? CGFloat.greatestFiniteMagnitude
+            let screenY = self.toggleItem.button?.window?.frame.midY ?? 12
+            let axExtras = AccessibilityMenuBarHelper.enumerateAllExtras(leftOf: toggleX, screenY: screenY)
+            if !axExtras.isEmpty {
+                let existingNamesNow = Set(self.cachedHiddenItemInfo.map { self.baseName(of: $0.name) })
+                let newFromAX = axExtras.filter { !existingNamesNow.contains(self.baseName(of: $0.name)) }
+                if !newFromAX.isEmpty {
+                    NSLog("[Snug] postCollapseDiscovery: AX enumeration found %d additional items: %@",
+                          newFromAX.count, newFromAX.map { $0.name }.joined(separator: ", "))
+                    self.cachedHiddenItemInfo.append(contentsOf: newFromAX)
+                    self.cachedHiddenItemInfo.sort { $0.name < $1.name }
+                }
+            }
+
+            NSLog("[Snug] postCollapseDiscovery DONE: cachedHiddenItemInfo=%d, postCollapseItemCount=%d: %@",
+                  self.cachedHiddenItemInfo.count, self.postCollapseItemCount,
+                  self.cachedHiddenItemInfo.map { $0.name }.joined(separator: ", "))
 
             if countChanged {
                 self.updateToggleIcon()
@@ -846,124 +861,96 @@ final class StatusBarController: NSObject {
         let naturalFrame = value.rectValue
         let itemName = sender.title
 
-        // For behind-notch items, skip position-based attempts entirely
-        // and use AX tree traversal to find and press by name.
-        if isBehindNotch(itemName: itemName, naturalFrame: naturalFrame) {
-            NSLog("[Snug] hiddenItemClicked: '%@' is behind notch, using name-based press", itemName)
-            performNameBasedClick(itemName: itemName)
-            return
-        }
+        NSLog("[Snug] hiddenItemClicked: '%@' frame=(%.0f,%.0f,%.0f,%.0f)",
+              itemName, naturalFrame.origin.x, naturalFrame.origin.y,
+              naturalFrame.size.width, naturalFrame.size.height)
 
-        // Try to match the clicked frame to a cached hidden item for its windowID
-        guard let matchedItem = findHiddenItem(matching: naturalFrame),
-              let naturalEntry = cachedNaturalPositions.first(where: { $0.windowID == matchedItem.windowID })
-        else {
-            // Can't match — fall back to full expansion
-            performFullExpansionClick(naturalFrame: naturalFrame, itemName: itemName)
-            return
-        }
+        // Try partial expansion first (better UX — only reveals the target item).
+        // This works for items with known windowIDs and valid natural positions.
+        if let matchedItem = findHiddenItem(matching: naturalFrame),
+           let naturalEntry = cachedNaturalPositions.first(where: { $0.windowID == matchedItem.windowID }),
+           let partialLength = partialSeparatorLength(for: naturalEntry.naturalX,
+                                                       clickedWindowID: matchedItem.windowID) {
 
-        let clickedWindowID = matchedItem.windowID
-        let usedPartial: Bool
-
-        // Calculate partial separator length to hide items left of the clicked one
-        if let partialLength = partialSeparatorLength(for: naturalEntry.naturalX,
-                                                       clickedWindowID: clickedWindowID) {
+            let clickedWindowID = matchedItem.windowID
             separatorItem.length = partialLength
-            usedPartial = true
-        } else {
-            // Leftmost item or calculation issue — full expansion
-            separatorItem.length = NSStatusItem.variableLength
-            usedPartial = false
-        }
+            isCollapsed = false
+            updateToggleIcon()
 
-        isCollapsed = false
-        updateToggleIcon()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                guard let self else { return }
+                self.itemManager.refreshItems()
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-            guard let self else { return }
+                let pressFrame: CGRect
+                if let actual = self.itemManager.items.first(where: { $0.windowID == clickedWindowID }) {
+                    pressFrame = actual.frame
+                } else {
+                    pressFrame = naturalFrame
+                }
 
-            // Refresh to get actual positions after partial expansion
-            self.itemManager.refreshItems()
-
-            // Find the item by windowID at its actual position
-            let pressFrame: CGRect
-            if let actual = self.itemManager.items.first(where: { $0.windowID == clickedWindowID }) {
-                pressFrame = actual.frame
-            } else {
-                // Item not found in refreshed list — use natural frame as fallback
-                pressFrame = naturalFrame
-            }
-
-            let pressed = AccessibilityMenuBarHelper.pressItem(at: pressFrame)
-
-            if pressed {
-                self.openedMenuItemFrame = pressFrame
-                self.startMenuDismissalPolling()
-            } else if usedPartial {
-                // Partial expansion failed — retry with full expansion
-                self.retryWithFullExpansion(naturalFrame: naturalFrame, itemName: itemName)
-            } else {
-                // Position-based press failed — try name-based as last resort
-                let screenY = self.toggleItem.button?.window?.frame.midY ?? 12
-                if let pressedFrame = AccessibilityMenuBarHelper.pressItemByName(
-                    itemName, screenY: screenY
-                ) {
-                    self.openedMenuItemFrame = pressedFrame
+                if AccessibilityMenuBarHelper.pressItem(at: pressFrame) {
+                    NSLog("[Snug] hiddenItemClicked: partial expansion + position press succeeded for '%@'", itemName)
+                    self.openedMenuItemFrame = pressFrame
                     self.startMenuDismissalPolling()
                 } else {
-                    self.collapseMenuBar()
+                    // Partial expansion failed — fall through to full expansion
+                    NSLog("[Snug] hiddenItemClicked: partial press failed for '%@', trying full expansion", itemName)
+                    self.fullExpandAndPress(naturalFrame: naturalFrame, itemName: itemName)
                 }
             }
+        } else {
+            // Can't do partial expansion — go straight to full expansion.
+            // This handles: items not in cache, leftmost items, behind-notch items, etc.
+            NSLog("[Snug] hiddenItemClicked: no partial expansion for '%@', using full expansion", itemName)
+            fullExpandAndPress(naturalFrame: naturalFrame, itemName: itemName)
         }
     }
 
-    // MARK: - Behind-Notch Helpers
-
-    /// Check whether a hidden item is behind the notch (not accessible by position).
-    private func isBehindNotch(itemName: String, naturalFrame: CGRect) -> Bool {
-        // Check 1: Item is in the overflow list (populated during smart expansion)
-        let clickedBase = baseName(of: itemName)
-        if cachedOverflowItemInfo.contains(where: { baseName(of: $0.name) == clickedBase }) {
-            return true
-        }
-
-        // Check 2: Natural frame is behind the notch on the current display
-        if hasNotch && naturalFrame.midX > 0 && naturalFrame.midX < safeLeftX {
-            return true
-        }
-
-        // Check 3: Item was only discovered post-collapse (frame has negative X from push).
-        // These items were invisible at natural width — behind the notch.
-        if naturalFrame.origin.x < 0 {
-            return true
-        }
-
-        return false
-    }
-
-    /// Click a behind-notch item using AX tree traversal (name-based, not position-based).
-    /// Expands the menu bar fully first so the AX tree is in a stable state,
-    /// then finds and presses the element by name.
-    private func performNameBasedClick(itemName: String) {
+    /// Full-expansion click with position-based + name-based fallback.
+    /// Treats all displays the same — doesn't depend on notch detection.
+    private func fullExpandAndPress(naturalFrame: CGRect, itemName: String) {
         separatorItem.length = NSStatusItem.variableLength
         isCollapsed = false
         updateToggleIcon()
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             guard let self else { return }
+            self.itemManager.refreshItems()
 
+            // 1. Try position-based press at actual position (if we can find item by windowID)
+            if let matchedItem = self.findHiddenItem(matching: naturalFrame),
+               let actual = self.itemManager.items.first(where: { $0.windowID == matchedItem.windowID }),
+               AccessibilityMenuBarHelper.pressItem(at: actual.frame) {
+                NSLog("[Snug] fullExpandAndPress: position press (windowID) succeeded for '%@'", itemName)
+                self.openedMenuItemFrame = actual.frame
+                self.startMenuDismissalPolling()
+                return
+            }
+
+            // 2. Try position-based press at the natural frame
+            if naturalFrame.origin.x > 0,
+               AccessibilityMenuBarHelper.pressItem(at: naturalFrame) {
+                NSLog("[Snug] fullExpandAndPress: position press (natural frame) succeeded for '%@'", itemName)
+                self.openedMenuItemFrame = naturalFrame
+                self.startMenuDismissalPolling()
+                return
+            }
+
+            // 3. Name-based press via AX tree traversal — works regardless of screen position
             let screenY = self.toggleItem.button?.window?.frame.midY ?? 12
-
+            NSLog("[Snug] fullExpandAndPress: trying name-based press for '%@' at screenY=%.0f", itemName, screenY)
             if let pressedFrame = AccessibilityMenuBarHelper.pressItemByName(
                 itemName, screenY: screenY
             ) {
+                NSLog("[Snug] fullExpandAndPress: name-based press succeeded for '%@' at (%.0f,%.0f)",
+                      itemName, pressedFrame.origin.x, pressedFrame.origin.y)
                 self.openedMenuItemFrame = pressedFrame
                 self.startMenuDismissalPolling()
-            } else {
-                NSLog("[Snug] performNameBasedClick: failed for '%@', collapsing", itemName)
-                self.collapseMenuBar()
+                return
             }
+
+            NSLog("[Snug] fullExpandAndPress: all press methods failed for '%@', collapsing", itemName)
+            self.collapseMenuBar()
         }
     }
 
@@ -1011,61 +998,6 @@ final class StatusBarController: NSObject {
         return length
     }
 
-    /// Full-expansion click — used when partial expansion isn't possible.
-    private func performFullExpansionClick(naturalFrame: CGRect, itemName: String? = nil) {
-        separatorItem.length = NSStatusItem.variableLength
-        isCollapsed = false
-        updateToggleIcon()
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-            guard let self else { return }
-            let pressed = AccessibilityMenuBarHelper.pressItem(at: naturalFrame)
-            if pressed {
-                self.openedMenuItemFrame = naturalFrame
-                self.startMenuDismissalPolling()
-            } else if let itemName {
-                // Position-based failed — try name-based as last resort
-                let screenY = self.toggleItem.button?.window?.frame.midY ?? 12
-                if let pressedFrame = AccessibilityMenuBarHelper.pressItemByName(
-                    itemName, screenY: screenY
-                ) {
-                    self.openedMenuItemFrame = pressedFrame
-                    self.startMenuDismissalPolling()
-                } else {
-                    self.collapseMenuBar()
-                }
-            } else {
-                self.collapseMenuBar()
-            }
-        }
-    }
-
-    /// Retry after partial expansion AXPress failed — expand fully and try again.
-    private func retryWithFullExpansion(naturalFrame: CGRect, itemName: String? = nil) {
-        separatorItem.length = NSStatusItem.variableLength
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-            guard let self else { return }
-            let pressed = AccessibilityMenuBarHelper.pressItem(at: naturalFrame)
-            if pressed {
-                self.openedMenuItemFrame = naturalFrame
-                self.startMenuDismissalPolling()
-            } else if let itemName {
-                // Position-based failed — try name-based as last resort
-                let screenY = self.toggleItem.button?.window?.frame.midY ?? 12
-                if let pressedFrame = AccessibilityMenuBarHelper.pressItemByName(
-                    itemName, screenY: screenY
-                ) {
-                    self.openedMenuItemFrame = pressedFrame
-                    self.startMenuDismissalPolling()
-                } else {
-                    self.collapseMenuBar()
-                }
-            } else {
-                self.collapseMenuBar()
-            }
-        }
-    }
 
     // MARK: - Menu Dismissal Polling
 

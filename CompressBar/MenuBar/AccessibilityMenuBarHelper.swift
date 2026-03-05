@@ -162,9 +162,14 @@ enum AccessibilityMenuBarHelper {
     /// - Returns: The AX frame of the pressed element (for menu dismissal polling), or nil on failure.
     static func pressItemByName(_ name: String, screenY: CGFloat) -> CGRect? {
         guard isGranted else { return nil }
-        guard let children = extrasMenuBarChildren() else { return nil }
+        guard let children = extrasMenuBarChildren() else {
+            NSLog("[Snug] pressItemByName: extrasMenuBarChildren returned nil")
+            return nil
+        }
 
         let targetBase = stripCountSuffix(name)
+        NSLog("[Snug] pressItemByName: looking for '%@' (base='%@') among %d children, screenY=%.0f",
+              name, targetBase, children.count, screenY)
 
         for child in children {
             let role = axStringAttribute(child, kAXRoleAttribute)
@@ -181,15 +186,36 @@ enum AccessibilityMenuBarHelper {
             let childBase = stripCountSuffix(info.name)
 
             if childBase == targetBase {
+                // Try AXPress first (preferred — works directly on the element)
                 let result = AXUIElementPerformAction(child, kAXPressAction as CFString)
                 if result == .success {
-                    NSLog("[Snug] pressItemByName: pressed '%@' at (%.0f,%.0f)", name, frame.origin.x, frame.origin.y)
+                    NSLog("[Snug] pressItemByName: AXPress succeeded for '%@' at (%.0f,%.0f)", name, frame.origin.x, frame.origin.y)
                     return frame
                 }
+
+                NSLog("[Snug] pressItemByName: AXPress failed (error=%d) for '%@' at (%.0f,%.0f), trying CGEvent click",
+                      result.rawValue, name, frame.origin.x, frame.origin.y)
+
+                // Fallback: simulate a mouse click at the element's position.
+                // This works even for items behind the notch — macOS processes
+                // click events at positions obscured by the hardware cutout.
+                let clickPoint = CGPoint(x: frame.midX, y: frame.midY)
+                if let mouseDown = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown,
+                                           mouseCursorPosition: clickPoint, mouseButton: .left),
+                   let mouseUp = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp,
+                                         mouseCursorPosition: clickPoint, mouseButton: .left) {
+                    mouseDown.post(tap: .cghidEventTap)
+                    usleep(50_000) // 50ms between down/up
+                    mouseUp.post(tap: .cghidEventTap)
+                    NSLog("[Snug] pressItemByName: CGEvent click sent for '%@' at (%.0f,%.0f)", name, clickPoint.x, clickPoint.y)
+                    return frame
+                }
+
+                NSLog("[Snug] pressItemByName: CGEvent creation failed for '%@'", name)
             }
         }
 
-        NSLog("[Snug] pressItemByName: could not find/press '%@'", name)
+        NSLog("[Snug] pressItemByName: could not find '%@' among children", name)
         return nil
     }
 
