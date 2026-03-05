@@ -47,22 +47,6 @@ final class StatusBarController: NSObject {
     /// Pre-resolved info (name + icon) from when items were still visible on screen
     private var cachedHiddenItemInfo: [HiddenItemInfo] = []
 
-    /// Timer that polls AX to detect when an opened status menu closes
-    private var menuPollTimer: Timer?
-
-    /// The frame of the item whose menu we opened (for polling AX)
-    private var openedMenuItemFrame: CGRect?
-
-    /// The name of the item whose menu we opened (for name-based polling
-    /// when position-based isMenuOpen fails, e.g. behind-notch items)
-    private var openedMenuItemName: String?
-
-    /// Number of items that couldn't fit in the safe area (behind notch)
-    private var overflowCount: Int = 0
-
-    /// Resolved info for items stuck behind the notch during smart expansion
-    private var cachedOverflowItemInfo: [HiddenItemInfo] = []
-
     /// Whether the current display has a notch
     private var hasNotch: Bool = false
 
@@ -425,32 +409,10 @@ final class StatusBarController: NSObject {
 
         if !hasNotch {
             targetLength = NSStatusItem.variableLength
-            overflowCount = 0
-            cachedOverflowItemInfo = []
         } else {
+            // Only expand enough to show items that fit before the notch
             let sorted = cachedNaturalPositions.sorted { $0.naturalX > $1.naturalX }
             let fitting = sorted.filter { $0.naturalX >= safeLeftX }
-
-            // Overflow = total hidden items minus what fits before the notch.
-            // hiddenItemCount includes post-collapse discovered items
-            // that CGWindowList missed at natural width (behind the notch).
-            let fittingCount = fitting.count
-            overflowCount = max(0, hiddenItemCount - fittingCount)
-
-            // Build overflow list: items whose names aren't in the fitting set
-            if overflowCount > 0 {
-                let fittingIDs = Set(fitting.map { $0.windowID })
-                let fittingItems = cachedHiddenItems.filter { fittingIDs.contains($0.windowID) }
-                let fittingNames = Set(
-                    AccessibilityMenuBarHelper.resolveItems(for: fittingItems)
-                        .map { baseName(of: $0.name) }
-                )
-                cachedOverflowItemInfo = cachedHiddenItemInfo.filter {
-                    !fittingNames.contains(baseName(of: $0.name))
-                }
-            } else {
-                cachedOverflowItemInfo = []
-            }
 
             if fitting.isEmpty {
                 targetLength = NSStatusItem.variableLength
@@ -631,7 +593,7 @@ final class StatusBarController: NSObject {
     /// Resolve hidden item info using process metadata (for items not resolvable via AX position).
     /// Used for behind-notch items that are only discoverable post-collapse via CGWindowList.
     private static func resolveItemsByProcess(_ items: [MenuBarItem]) -> [HiddenItemInfo] {
-        var seen: [String: (icon: NSImage?, frame: CGRect)] = [:]
+        var seen: [String: (icon: NSImage?, frame: CGRect, windowID: CGWindowID, ownerPID: pid_t)] = [:]
         var counts: [String: Int] = [:]
 
         for item in items {
@@ -653,14 +615,14 @@ final class StatusBarController: NSObject {
                     scaled.unlockFocus()
                     return scaled
                 }()
-                seen[name] = (icon: icon, frame: item.frame)
+                seen[name] = (icon: icon, frame: item.frame, windowID: item.windowID, ownerPID: item.ownerPID)
             }
         }
 
         return counts.sorted(by: { $0.key < $1.key }).map { name, count in
             let displayName = count > 1 ? "\(name) (\(count))" : name
             let data = seen[name]!
-            return HiddenItemInfo(name: displayName, icon: data.icon, frame: data.frame)
+            return HiddenItemInfo(name: displayName, icon: data.icon, frame: data.frame, windowID: data.windowID, ownerPID: data.ownerPID)
         }
     }
 
@@ -685,8 +647,6 @@ final class StatusBarController: NSObject {
     private func forceFullExpand() {
         separatorItem.length = NSStatusItem.variableLength
         isCollapsed = false
-        overflowCount = 0
-        cachedOverflowItemInfo = []
         updateToggleIcon()
         autoCollapseIfNeeded()
     }
@@ -725,118 +685,6 @@ final class StatusBarController: NSObject {
 
     // MARK: - Context Menu
 
-    private func buildContextMenu() -> NSMenu {
-        let menu = NSMenu()
-
-        snugLog(" buildContextMenu: isCollapsed=%d, hiddenItemCount=%d, cachedHiddenItemInfo=%d, postCollapseItemCount=%d",
-              isCollapsed ? 1 : 0, hiddenItemCount, cachedHiddenItemInfo.count, postCollapseItemCount)
-        snugLog(" buildContextMenu: items: %@",
-              cachedHiddenItemInfo.map { $0.name }.joined(separator: ", "))
-
-        if isCollapsed {
-            let count = hiddenItemCount
-            let items = cachedHiddenItemInfo
-
-            if !items.isEmpty {
-                let header = NSMenuItem(title: "Hidden Items", action: nil, keyEquivalent: "")
-                header.isEnabled = false
-                menu.addItem(header)
-
-                for info in items {
-                    let menuItem = NSMenuItem(
-                        title: info.name,
-                        action: #selector(hiddenItemClicked(_:)),
-                        keyEquivalent: ""
-                    )
-                    menuItem.target = self
-                    menuItem.image = info.icon
-                    menuItem.representedObject = NSValue(rect: NSRect(
-                        x: info.frame.origin.x, y: info.frame.origin.y,
-                        width: info.frame.size.width, height: info.frame.size.height
-                    ))
-                    menu.addItem(menuItem)
-                }
-            } else if count > 0 {
-                let label = NSMenuItem(title: "\(count) items hidden", action: nil, keyEquivalent: "")
-                label.isEnabled = false
-                menu.addItem(label)
-            }
-
-            if !items.isEmpty || count > 0 {
-                menu.addItem(NSMenuItem.separator())
-            }
-        }
-
-        if hasNotch && !isCollapsed && overflowCount > 0 {
-            if !cachedOverflowItemInfo.isEmpty {
-                let header = NSMenuItem(title: "Behind Notch", action: nil, keyEquivalent: "")
-                header.isEnabled = false
-                menu.addItem(header)
-
-                for info in cachedOverflowItemInfo {
-                    let menuItem = NSMenuItem(
-                        title: info.name,
-                        action: #selector(hiddenItemClicked(_:)),
-                        keyEquivalent: ""
-                    )
-                    menuItem.target = self
-                    menuItem.image = info.icon
-                    menuItem.representedObject = NSValue(rect: NSRect(
-                        x: info.frame.origin.x, y: info.frame.origin.y,
-                        width: info.frame.size.width, height: info.frame.size.height
-                    ))
-                    menu.addItem(menuItem)
-                }
-            } else {
-                let label = NSMenuItem(
-                    title: "\(overflowCount) behind notch",
-                    action: nil, keyEquivalent: ""
-                )
-                label.isEnabled = false
-                menu.addItem(label)
-            }
-
-            let showAllItem = NSMenuItem(
-                title: "Show All",
-                action: #selector(forceFullExpandAction),
-                keyEquivalent: ""
-            )
-            showAllItem.target = self
-            menu.addItem(showAllItem)
-            menu.addItem(NSMenuItem.separator())
-        }
-
-        let prefsItem = NSMenuItem(
-            title: "Preferences...",
-            action: #selector(openPreferences),
-            keyEquivalent: ","
-        )
-        prefsItem.target = self
-        menu.addItem(prefsItem)
-
-        menu.addItem(NSMenuItem.separator())
-
-        let autoCollapseItem = NSMenuItem(
-            title: "Auto-collapse",
-            action: #selector(toggleAutoCollapse),
-            keyEquivalent: ""
-        )
-        autoCollapseItem.target = self
-        autoCollapseItem.state = preferences.isAutoHide ? .on : .off
-        menu.addItem(autoCollapseItem)
-
-        menu.addItem(NSMenuItem.separator())
-
-        let quitItem = NSMenuItem(
-            title: "Quit Snug",
-            action: #selector(NSApplication.terminate(_:)),
-            keyEquivalent: "q"
-        )
-        menu.addItem(quitItem)
-
-        return menu
-    }
-
     // MARK: - Actions
 
     @objc private func toggleButtonPressed(_ sender: NSStatusBarButton) {
@@ -852,7 +700,58 @@ final class StatusBarController: NSObject {
     }
 
     private func showContextMenu() {
-        let menu = buildContextMenu()
+        let menu = NSMenu()
+
+        // Show all hidden items when collapsed
+        let allItems = isCollapsed ? cachedHiddenItemInfo : []
+
+        snugLog(" showContextMenu: items=%d, isCollapsed=%d",
+              allItems.count, isCollapsed ? 1 : 0)
+
+        for info in allItems {
+            let menuItem = NSMenuItem(
+                title: info.name,
+                action: #selector(hiddenItemClicked(_:)),
+                keyEquivalent: ""
+            )
+            menuItem.target = self
+            menuItem.representedObject = info
+            if let icon = info.icon {
+                menuItem.image = icon
+            }
+            menu.addItem(menuItem)
+        }
+
+        if !allItems.isEmpty {
+            menu.addItem(NSMenuItem.separator())
+        }
+
+        let autoCollapseItem = NSMenuItem(
+            title: "Auto-collapse",
+            action: #selector(toggleAutoCollapse),
+            keyEquivalent: ""
+        )
+        autoCollapseItem.target = self
+        autoCollapseItem.state = preferences.isAutoHide ? .on : .off
+        menu.addItem(autoCollapseItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let prefsItem = NSMenuItem(
+            title: "Preferences…",
+            action: #selector(openPreferences),
+            keyEquivalent: ","
+        )
+        prefsItem.target = self
+        menu.addItem(prefsItem)
+
+        let quitItem = NSMenuItem(
+            title: "Quit Snug",
+            action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: "q"
+        )
+        menu.addItem(quitItem)
+
         toggleItem.menu = menu
         toggleItem.button?.performClick(nil)
         DispatchQueue.main.async { [weak self] in
@@ -860,333 +759,78 @@ final class StatusBarController: NSObject {
         }
     }
 
+    /// Handle clicking a hidden item in the context menu.
+    /// Expands the bar to reveal the item, then AXPresses it to open its status menu.
     @objc private func hiddenItemClicked(_ sender: NSMenuItem) {
-        guard let value = sender.representedObject as? NSValue else {
-            snugLog("hiddenItemClicked: no representedObject on menu item '%@'", sender.title)
-            return
-        }
-        let naturalFrame = value.rectValue
-        let itemName = sender.title
+        guard let info = sender.representedObject as? HiddenItemInfo else { return }
 
-        snugLog("========== hiddenItemClicked START ==========")
-        snugLog("  itemName='%@' naturalFrame=(%.0f,%.0f,%.0f,%.0f)",
-              itemName, naturalFrame.origin.x, naturalFrame.origin.y,
-              naturalFrame.size.width, naturalFrame.size.height)
-        snugLog("  cachedHiddenItems count=%d, cachedNaturalPositions count=%d",
-              cachedHiddenItems.count, cachedNaturalPositions.count)
+        snugLog(" hiddenItemClicked: '%@' windowID=%d ownerPID=%d",
+              info.name, info.windowID, info.ownerPID)
 
-        // Try partial expansion first (better UX — only reveals the target item).
-        // This works for items with known windowIDs and valid natural positions.
-        let matchedItem = findHiddenItem(matching: naturalFrame)
-        snugLog("  findHiddenItem result: %@", matchedItem != nil ? "wid=\(matchedItem!.windowID)" : "nil")
-
-        if let matchedItem,
-           let naturalEntry = cachedNaturalPositions.first(where: { $0.windowID == matchedItem.windowID }),
-           let partialLength = partialSeparatorLength(for: naturalEntry.naturalX,
-                                                       clickedWindowID: matchedItem.windowID) {
-
-            let clickedWindowID = matchedItem.windowID
-            snugLog("  PARTIAL expansion: wid=%d, partialLength=%.0f", clickedWindowID, partialLength)
+        // Try partial expansion to reveal just this item
+        if let partialLength = partialSeparatorLength(
+            for: info.frame.origin.x,
+            clickedWindowID: info.windowID
+        ) {
+            snugLog(" hiddenItemClicked: partial expand to length=%.0f", partialLength)
             separatorItem.length = partialLength
             isCollapsed = false
+            isToggling = false
             updateToggleIcon()
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            // After expansion settles, AXPress the item to open its menu
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
                 guard let self else { return }
-                self.itemManager.refreshItems()
-
-                let pressFrame: CGRect
-                if let actual = self.itemManager.items.first(where: { $0.windowID == clickedWindowID }) {
-                    pressFrame = actual.frame
-                    snugLog("  partial: found actual frame=(%.0f,%.0f,%.0f,%.0f)",
-                          pressFrame.origin.x, pressFrame.origin.y, pressFrame.width, pressFrame.height)
-                } else {
-                    pressFrame = naturalFrame
-                    snugLog("  partial: using natural frame (actual not found)")
-                }
-
-                if AccessibilityMenuBarHelper.pressItem(at: pressFrame) {
-                    snugLog("  partial press SUCCEEDED for '%@'", itemName)
-                    self.openedMenuItemFrame = pressFrame
-                    self.openedMenuItemName = itemName
-                    self.startMenuDismissalPolling()
-                } else {
-                    snugLog("  partial press FAILED for '%@', falling through to full expansion", itemName)
-                    self.fullExpandAndPress(naturalFrame: naturalFrame, itemName: itemName)
-                }
+                self.pressRevealedItem(info)
+                self.autoCollapseIfNeeded()
             }
         } else {
-            // Can't do partial expansion — go straight to full expansion.
-            if matchedItem != nil {
-                snugLog("  no partial: matchedItem found but naturalEntry or partialLength missing")
-            } else {
-                snugLog("  no partial: matchedItem not found in cache")
+            // Can't partially expand (leftmost item or no match) — full expand
+            snugLog(" hiddenItemClicked: full expand (partial returned nil)")
+            expandCollapseIfNeeded()
+
+            // After full expansion settles, try AXPress
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                guard let self else { return }
+                self.pressRevealedItem(info)
             }
-            snugLog("  -> using FULL expansion for '%@'", itemName)
-            fullExpandAndPress(naturalFrame: naturalFrame, itemName: itemName)
         }
     }
 
-    /// Full-expansion click with position-based + name-based fallback.
-    /// Treats all displays the same — doesn't depend on notch detection.
-    private func fullExpandAndPress(naturalFrame: CGRect, itemName: String) {
-        snugLog("fullExpandAndPress START: '%@' naturalFrame=(%.0f,%.0f,%.0f,%.0f)",
-              itemName, naturalFrame.origin.x, naturalFrame.origin.y,
-              naturalFrame.width, naturalFrame.height)
-        separatorItem.length = NSStatusItem.variableLength
-        isCollapsed = false
-        updateToggleIcon()
+    /// Try to AXPress a menu bar item after expansion.
+    /// Uses the AX tree to find the element by PID (works even if off-screen),
+    /// with a position-based fallback using fresh CGWindowList coordinates.
+    private func pressRevealedItem(_ info: HiddenItemInfo) {
+        // Get fresh coordinates for the position fallback
+        itemManager.refreshItems()
+        let freshFrame = itemManager.items
+            .first(where: { $0.windowID == info.windowID })?.frame ?? info.frame
 
-        let toggleWindow = toggleItem.button?.window
-        snugLog("  separator set to variableLength, toggleWindow frame=%@",
-              toggleWindow != nil ? "\(toggleWindow!.frame)" : "nil")
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-            guard let self else { return }
-            self.itemManager.refreshItems()
-            snugLog("  after 0.3s: refreshed items, count=%d", self.itemManager.items.count)
-
-            // Determine the best known position for this item
-            let matchedItem = self.findHiddenItem(matching: naturalFrame)
-            snugLog("  findHiddenItem=%@", matchedItem != nil ? "wid=\(matchedItem!.windowID)" : "nil")
-
-            let pressFrame: CGRect
-            if let matchedItem,
-               let actual = self.itemManager.items.first(where: { $0.windowID == matchedItem.windowID }) {
-                pressFrame = actual.frame
-                snugLog("  using actual CGWindowList frame=(%.0f,%.0f,%.0f,%.0f)",
-                      pressFrame.origin.x, pressFrame.origin.y, pressFrame.width, pressFrame.height)
-            } else if naturalFrame.origin.x > 0 {
-                pressFrame = naturalFrame
-                snugLog("  using naturalFrame (no windowID match)")
-            } else {
-                snugLog("  no valid position, skipping to name-based press")
-                // Jump straight to name-based as last resort
-                let screenY = self.toggleItem.button?.window?.frame.midY ?? 12
-                if let pressedFrame = AccessibilityMenuBarHelper.pressItemByName(itemName, screenY: screenY) {
-                    self.openedMenuItemFrame = pressedFrame
-                    self.openedMenuItemName = itemName
-                    self.startMenuDismissalPolling()
-                    return
-                }
-                snugLog("  ALL METHODS FAILED for '%@' -> collapsing", itemName)
-                self.collapseMenuBar()
-                return
-            }
-
-            // Step 1: Try AX-based press (works for items that AX can locate by position)
-            if AccessibilityMenuBarHelper.pressItem(at: pressFrame) {
-                snugLog("  step1: AX press SUCCEEDED for '%@'", itemName)
-                self.openedMenuItemFrame = pressFrame
-                self.openedMenuItemName = itemName
-                self.startMenuDismissalPolling()
-                return
-            }
-            snugLog("  step1: AX press FAILED for '%@'", itemName)
-
-            // Step 2: Direct CGEvent click at the item's known position.
-            // This bypasses AX entirely — just sends a mouse click at the coordinates
-            // we know from CGWindowList. Works for items on external monitors where the
-            // AX tree has stale/wrong data but the item IS at a visible, clickable position.
-            let clickPoint = CGPoint(x: pressFrame.midX, y: pressFrame.midY)
-            snugLog("  step2: trying CGEvent click at (%.1f, %.1f) for '%@'", clickPoint.x, clickPoint.y, itemName)
-
-            if let mouseDown = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown,
-                                       mouseCursorPosition: clickPoint, mouseButton: .left),
-               let mouseUp = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp,
-                                     mouseCursorPosition: clickPoint, mouseButton: .left) {
-                mouseDown.post(tap: .cghidEventTap)
-                usleep(80_000) // 80ms between down/up
-                mouseUp.post(tap: .cghidEventTap)
-                snugLog("  step2: CGEvent click SENT for '%@' at (%.1f, %.1f)", itemName, clickPoint.x, clickPoint.y)
-
-                // Give the menu a moment to appear, then verify it opened
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-                    guard let self else { return }
-
-                    // Check if a menu actually opened at this position
-                    if AccessibilityMenuBarHelper.isMenuOpen(at: pressFrame) {
-                        snugLog("  step2: menu IS open after CGEvent click — success!")
-                        self.openedMenuItemFrame = pressFrame
-                        self.openedMenuItemName = itemName
-                        self.startMenuDismissalPolling()
-                        return
-                    }
-
-                    snugLog("  step2: menu NOT open after CGEvent click, trying Cmd+drag relocate")
-
-                    // Step 3: Cmd+drag the item to a visible position, then click.
-                    // The item might be behind the notch or at a position where clicks
-                    // aren't delivered. Move it to a known-good position first.
-                    self.cmdDragAndPress(sourceFrame: pressFrame, itemName: itemName)
-                }
-                return
-            }
-
-            snugLog("  step2: CGEvent creation failed, trying Cmd+drag")
-            self.cmdDragAndPress(sourceFrame: pressFrame, itemName: itemName)
+        let pressed = AccessibilityMenuBarHelper.pressItem(
+            named: info.name,
+            ownerPID: info.ownerPID,
+            fallbackFrame: freshFrame
+        )
+        if !pressed {
+            snugLog(" pressRevealedItem: AXPress failed for '%@' — item revealed for manual click", info.name)
         }
     }
 
-    // MARK: - Cmd+Drag Relocate and Press
-
-    /// Original position of an item we Cmd+dragged to a new location.
-    /// Used to restore the item's position after its menu is dismissed.
-    private var relocatedItemSource: CGPoint?
-
-    /// Where we moved the item to (for clicking and restoring).
-    private var relocatedItemTarget: CGPoint?
-
-    /// Cmd+drag a menu bar item from its current position to a visible position,
-    /// then click it to open its menu. On menu dismissal, the item is moved back.
-    private func cmdDragAndPress(sourceFrame: CGRect, itemName: String) {
-        // Target position: same Y (same menu bar), X near the separator (visible area).
-        // The separator's X in AppKit coords = its Quartz X (only Y differs between systems).
-        let separatorX = separatorItem.button?.window?.frame.origin.x ?? 0
-        let separatorW = separatorItem.button?.window?.frame.width ?? 10
-
-        // Place target just to the right of the separator (between separator and toggle)
-        // Use source Y since it's in Quartz coords (same as CGEvent)
-        let targetX = separatorX + separatorW + 20
-        let sourcePoint = CGPoint(x: sourceFrame.midX, y: sourceFrame.midY)
-
-        // Check if the source and target are on the same screen by comparing Y.
-        // If they're on different screens (different Y), the Cmd+drag won't work.
-        // In that case, use the source Y for the target too (stay on same menu bar).
-        let targetY = sourceFrame.midY  // Same menu bar row
-
-        let targetPoint = CGPoint(x: targetX, y: targetY)
-
-        snugLog("cmdDragAndPress: Cmd+drag '%@' from (%.0f,%.0f) to (%.0f,%.0f)",
-              itemName, sourcePoint.x, sourcePoint.y, targetPoint.x, targetPoint.y)
-
-        // Store for restoration on menu dismissal
-        relocatedItemSource = sourcePoint
-        relocatedItemTarget = targetPoint
-
-        // Simulate Cmd+drag: Cmd+mouseDown → mouseDragged → mouseUp
-        let cmdFlags = CGEventFlags.maskCommand
-
-        guard let mouseDown = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown,
-                                       mouseCursorPosition: sourcePoint, mouseButton: .left) else {
-            snugLog("cmdDragAndPress: failed to create mouseDown event")
-            collapseMenuBar()
+    /// Activate (bring to foreground) the app that owns a status item.
+    /// Used as a fallback for behind-notch items that can't be revealed.
+    private func activateApp(pid: pid_t) {
+        guard pid != 0,
+              let app = NSRunningApplication(processIdentifier: pid) else {
+            snugLog(" activateApp: invalid pid=%d", pid)
             return
         }
-        mouseDown.flags = cmdFlags
-        mouseDown.post(tap: .cghidEventTap)
-
-        usleep(150_000) // 150ms hold before drag
-
-        // Drag in a few steps for smoother movement
-        let steps = 5
-        for i in 1...steps {
-            let fraction = CGFloat(i) / CGFloat(steps)
-            let intermediateX = sourcePoint.x + (targetPoint.x - sourcePoint.x) * fraction
-            let intermediateY = sourcePoint.y + (targetPoint.y - sourcePoint.y) * fraction
-            let intermediatePoint = CGPoint(x: intermediateX, y: intermediateY)
-
-            guard let drag = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDragged,
-                                      mouseCursorPosition: intermediatePoint, mouseButton: .left) else { continue }
-            drag.flags = cmdFlags
-            drag.post(tap: .cghidEventTap)
-            usleep(30_000) // 30ms between drag steps
-        }
-
-        guard let mouseUp = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp,
-                                     mouseCursorPosition: targetPoint, mouseButton: .left) else {
-            snugLog("cmdDragAndPress: failed to create mouseUp event")
-            collapseMenuBar()
-            return
-        }
-        mouseUp.post(tap: .cghidEventTap)
-
-        snugLog("cmdDragAndPress: Cmd+drag complete, waiting for settle then clicking")
-
-        // Wait for the item to settle at its new position, then click it
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-            guard let self else { return }
-
-            // Click at the target position to open the item's menu
-            guard let clickDown = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown,
-                                           mouseCursorPosition: targetPoint, mouseButton: .left),
-                  let clickUp = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp,
-                                         mouseCursorPosition: targetPoint, mouseButton: .left) else {
-                snugLog("cmdDragAndPress: failed to create click events")
-                self.collapseMenuBar()
-                return
-            }
-
-            clickDown.post(tap: .cghidEventTap)
-            usleep(80_000)
-            clickUp.post(tap: .cghidEventTap)
-
-            snugLog("cmdDragAndPress: clicked at target (%.0f,%.0f)", targetPoint.x, targetPoint.y)
-
-            // Use the target position for menu open detection
-            let targetFrame = CGRect(x: targetPoint.x - sourceFrame.width / 2,
-                                     y: targetPoint.y - sourceFrame.height / 2,
-                                     width: sourceFrame.width,
-                                     height: sourceFrame.height)
-            self.openedMenuItemFrame = targetFrame
-            self.openedMenuItemName = itemName
-            self.startMenuDismissalPolling()
-        }
-    }
-
-    /// After a menu closes, if we had Cmd+dragged an item to a new position,
-    /// move it back to its original position.
-    private func restoreRelocatedItem() {
-        guard let source = relocatedItemSource,
-              let target = relocatedItemTarget else { return }
-
-        snugLog("restoreRelocatedItem: Cmd+drag back from (%.0f,%.0f) to (%.0f,%.0f)",
-              target.x, target.y, source.x, source.y)
-
-        let cmdFlags = CGEventFlags.maskCommand
-
-        guard let mouseDown = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown,
-                                       mouseCursorPosition: target, mouseButton: .left) else { return }
-        mouseDown.flags = cmdFlags
-        mouseDown.post(tap: .cghidEventTap)
-
-        usleep(150_000)
-
-        let steps = 5
-        for i in 1...steps {
-            let fraction = CGFloat(i) / CGFloat(steps)
-            let x = target.x + (source.x - target.x) * fraction
-            let y = target.y + (source.y - target.y) * fraction
-
-            guard let drag = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDragged,
-                                      mouseCursorPosition: CGPoint(x: x, y: y), mouseButton: .left) else { continue }
-            drag.flags = cmdFlags
-            drag.post(tap: .cghidEventTap)
-            usleep(30_000)
-        }
-
-        guard let mouseUp = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp,
-                                     mouseCursorPosition: source, mouseButton: .left) else { return }
-        mouseUp.post(tap: .cghidEventTap)
-
-        relocatedItemSource = nil
-        relocatedItemTarget = nil
-
-        snugLog("restoreRelocatedItem: done")
+        snugLog(" activateApp: activating '%@' (pid=%d)", app.localizedName ?? "unknown", pid)
+        app.activate()
     }
 
     // MARK: - Partial Expansion Helpers
 
-    /// Find the cachedHiddenItems entry whose natural frame matches the given frame.
-    private func findHiddenItem(matching frame: CGRect) -> MenuBarItem? {
-        let tolerance: CGFloat = 2.0
-        return cachedHiddenItems.first { item in
-            abs(item.frame.origin.x - frame.origin.x) < tolerance &&
-            abs(item.frame.origin.y - frame.origin.y) < tolerance
-        }
-    }
-
-    /// Calculate separator length that reveals the clicked item but hides items to its left.
+    /// Calculate separator length that reveals items up to a given natural X position.
     /// Returns nil if full expansion (variableLength) should be used instead.
     private func partialSeparatorLength(for clickedNaturalX: CGFloat,
                                          clickedWindowID: CGWindowID) -> CGFloat? {
@@ -1208,92 +852,27 @@ final class StatusBarController: NSObject {
             .frame.width ?? 30
 
         let leftNeighborRightEdge = leftNeighbor.naturalX + leftNeighborWidth
-        let push = leftNeighborRightEdge + margin
+        var push = leftNeighborRightEdge + margin
 
         // If push would also hide the clicked item, fall back
         guard push < clickedNaturalX else { return nil }
+
+        // Ensure the clicked item ends up to the right of the notch.
+        // The item's on-screen X = naturalX - push, so we need:
+        //   naturalX - push >= safeLeftX  →  push <= naturalX - safeLeftX
+        if hasNotch {
+            let maxPush = clickedNaturalX - safeLeftX
+            if maxPush <= 0 {
+                // Item is naturally behind the notch — full expand needed
+                return nil
+            }
+            push = min(push, maxPush)
+        }
 
         let length = naturalSeparatorWidth + push
         guard length > naturalSeparatorWidth, length < collapseLength else { return nil }
 
         return length
-    }
-
-
-    // MARK: - Menu Dismissal Polling
-
-    private func startMenuDismissalPolling() {
-        menuPollTimer?.invalidate()
-        snugLog("startMenuDismissalPolling: frame=%@, name=%@",
-              openedMenuItemFrame != nil ? "\(openedMenuItemFrame!)" : "nil",
-              openedMenuItemName ?? "nil")
-
-        // Small initial delay so the menu has time to appear
-        var pollCount = 0
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            guard let self else { return }
-
-            snugLog("  polling timer starting (0.5s delay passed)")
-
-            self.menuPollTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
-                Task { @MainActor in
-                    guard let self else { return }
-                    pollCount += 1
-
-                    // Check if the menu is still open — try position-based first,
-                    // fall back to name-based for items behind the notch where
-                    // position-based lookup fails.
-                    if let frame = self.openedMenuItemFrame {
-                        let posOpen = AccessibilityMenuBarHelper.isMenuOpen(at: frame)
-                        if pollCount <= 3 {
-                            snugLog("  poll[%d]: positionBased isMenuOpen=%d frame=(%.0f,%.0f)",
-                                  pollCount, posOpen ? 1 : 0, frame.origin.x, frame.origin.y)
-                        }
-                        if posOpen { return }
-                    }
-
-                    // Position-based check failed — try name-based
-                    if let name = self.openedMenuItemName {
-                        let screenY = self.toggleItem.button?.window?.frame.midY ?? 12
-                        let nameOpen = AccessibilityMenuBarHelper.isMenuOpenByName(name, screenY: screenY)
-                        if pollCount <= 3 {
-                            snugLog("  poll[%d]: nameBased isMenuOpen=%d name='%@'",
-                                  pollCount, nameOpen ? 1 : 0, name)
-                        }
-                        if nameOpen { return }
-                    }
-
-                    // Menu closed — re-collapse
-                    snugLog("  poll[%d]: menu CLOSED -> finishMenuDismissal", pollCount)
-                    self.finishMenuDismissal()
-                }
-            }
-        }
-    }
-
-    private func finishMenuDismissal() {
-        snugLog("finishMenuDismissal: relocated=%d", relocatedItemSource != nil ? 1 : 0)
-        menuPollTimer?.invalidate()
-        menuPollTimer = nil
-        openedMenuItemFrame = nil
-        openedMenuItemName = nil
-
-        // If we Cmd+dragged an item to a new position, move it back first
-        if relocatedItemSource != nil {
-            // Small delay so any menu action can complete, then restore + collapse
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                self?.restoreRelocatedItem()
-                // Wait for the restore drag to finish before collapsing
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                    self?.collapseMenuBar()
-                }
-            }
-        } else {
-            // Small delay so any menu action can complete
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                self?.collapseMenuBar()
-            }
-        }
     }
 
     @objc private func openPreferences() {
@@ -1333,13 +912,6 @@ final class StatusBarController: NSObject {
         cachedNaturalPositions = []
         cachedHiddenItems = []
         cachedHiddenItemInfo = []
-        cachedOverflowItemInfo = []
         postCollapseItemCount = 0
-        menuPollTimer?.invalidate()
-        menuPollTimer = nil
-        openedMenuItemFrame = nil
-        openedMenuItemName = nil
-        relocatedItemSource = nil
-        relocatedItemTarget = nil
     }
 }

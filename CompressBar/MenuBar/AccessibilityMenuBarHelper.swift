@@ -7,6 +7,10 @@ struct HiddenItemInfo: Sendable {
     let icon: NSImage?
     /// Natural screen position (Quartz coords) for re-querying via AX.
     let frame: CGRect
+    /// CGWindowList window ID (0 if unknown, e.g. from AX tree enumeration).
+    let windowID: CGWindowID
+    /// PID of the process that owns this status item (0 if unknown).
+    let ownerPID: pid_t
 }
 
 /// Provides optional Accessibility API (AXUIElement) integration for resolving
@@ -39,8 +43,87 @@ enum AccessibilityMenuBarHelper {
         }
     }
 
+    /// Press a menu bar extra to open its status menu.
+    /// Walks the AX tree to find the element by owner PID — works even if the
+    /// item is off-screen or behind the notch (no coordinates needed).
+    /// Falls back to position-based lookup if the tree walk fails.
+    @discardableResult
+    static func pressItem(named name: String, ownerPID: pid_t, fallbackFrame: CGRect) -> Bool {
+        guard isGranted else { return false }
+
+        // Primary: walk the AX tree to find the element by PID
+        if ownerPID != 0, let element = findExtraByPID(ownerPID) {
+            snugLog("pressItem: found '%@' in AX tree (pid=%d), pressing", name, ownerPID)
+            let pressResult = AXUIElementPerformAction(element, kAXPressAction as CFString)
+            snugLog("pressItem: AXPress result=%d (0=success)", pressResult.rawValue)
+            if pressResult == .success { return true }
+        }
+
+        // Fallback: position-based lookup
+        snugLog("pressItem: tree walk failed for '%@', trying position (%.0f, %.0f)",
+              name, fallbackFrame.midX, fallbackFrame.midY)
+        return pressItemAtPosition(fallbackFrame)
+    }
+
+    /// Press a menu bar item at screen coordinates. Only works if the item is visible.
+    private static func pressItemAtPosition(_ frame: CGRect) -> Bool {
+        let systemWide = AXUIElementCreateSystemWide()
+        var element: AXUIElement?
+
+        let result = AXUIElementCopyElementAtPosition(
+            systemWide, Float(frame.midX), Float(frame.midY), &element
+        )
+        guard result == .success, let element else { return false }
+
+        let role = axStringAttribute(element, kAXRoleAttribute)
+        let subrole = axStringAttribute(element, kAXSubroleAttribute)
+        guard role == "AXMenuBarItem" && subrole == "AXMenuExtra" else { return false }
+
+        return AXUIElementPerformAction(element, kAXPressAction as CFString) == .success
+    }
+
+    /// Find a menu bar extra in the AX tree by its owner PID.
+    /// Queries the TARGET APP's own AXExtrasMenuBar directly — this works because
+    /// each app exposes its own status item(s) via its AXExtrasMenuBar attribute,
+    /// whereas Control Centre's AXExtrasMenuBar reports all children as its own PID.
+    private static func findExtraByPID(_ targetPID: pid_t) -> AXUIElement? {
+        let app = AXUIElementCreateApplication(targetPID)
+
+        var extrasBarValue: AnyObject?
+        let barResult = AXUIElementCopyAttributeValue(
+            app, "AXExtrasMenuBar" as CFString, &extrasBarValue
+        )
+        guard barResult == .success, let extrasBar = extrasBarValue else {
+            snugLog("findExtraByPID: pid %d has no AXExtrasMenuBar (error=%d)",
+                  targetPID, barResult.rawValue)
+            return nil
+        }
+
+        var childrenValue: AnyObject?
+        AXUIElementCopyAttributeValue(
+            extrasBar as! AXUIElement, kAXChildrenAttribute as CFString, &childrenValue
+        )
+        guard let children = childrenValue as? [AXUIElement], !children.isEmpty else {
+            snugLog("findExtraByPID: pid %d AXExtrasMenuBar has no children", targetPID)
+            return nil
+        }
+
+        snugLog("findExtraByPID: pid %d has %d extras bar children", targetPID, children.count)
+
+        for child in children {
+            let role = axStringAttribute(child, kAXRoleAttribute)
+            let subrole = axStringAttribute(child, kAXSubroleAttribute)
+            guard role == "AXMenuBarItem" && subrole == "AXMenuExtra" else { continue }
+            // Return the first matching menu extra from this app
+            return child
+        }
+
+        snugLog("findExtraByPID: pid %d — no AXMenuExtra children found", targetPID)
+        return nil
+    }
+
     /// Resolve info (name + icon) for a menu bar item at the given frame.
-    static func itemInfo(at frame: CGRect) -> HiddenItemInfo? {
+    static func itemInfo(at frame: CGRect, windowID: CGWindowID = 0) -> HiddenItemInfo? {
         guard isGranted else { return nil }
 
         let systemWide = AXUIElementCreateSystemWide()
@@ -57,22 +140,22 @@ enum AccessibilityMenuBarHelper {
         let subrole = axStringAttribute(element, kAXSubroleAttribute)
         guard role == "AXMenuBarItem" && subrole == "AXMenuExtra" else { return nil }
 
-        return resolveElement(element, frame: frame)
+        return resolveElement(element, frame: frame, windowID: windowID)
     }
 
     /// Resolve info for multiple menu bar items. Returns sorted, deduplicated results.
     static func resolveItems(for items: [MenuBarItem]) -> [HiddenItemInfo] {
         guard isGranted else { return [] }
 
-        // Deduplicate by name, keeping first icon and frame per name
-        var seen: [String: (icon: NSImage?, frame: CGRect)] = [:]
+        // Deduplicate by name, keeping first icon, frame, windowID, and ownerPID per name
+        var seen: [String: (icon: NSImage?, frame: CGRect, windowID: CGWindowID, ownerPID: pid_t)] = [:]
         var counts: [String: Int] = [:]
 
         for item in items {
-            if let info = itemInfo(at: item.frame) {
+            if let info = itemInfo(at: item.frame, windowID: item.windowID) {
                 counts[info.name, default: 0] += 1
                 if seen[info.name] == nil {
-                    seen[info.name] = (icon: info.icon, frame: info.frame)
+                    seen[info.name] = (icon: info.icon, frame: info.frame, windowID: item.windowID, ownerPID: info.ownerPID)
                 }
             }
         }
@@ -80,7 +163,7 @@ enum AccessibilityMenuBarHelper {
         return counts.sorted(by: { $0.key < $1.key }).map { name, count in
             let displayName = count > 1 ? "\(name) (\(count))" : name
             let data = seen[name]!
-            return HiddenItemInfo(name: displayName, icon: data.icon, frame: data.frame)
+            return HiddenItemInfo(name: displayName, icon: data.icon, frame: data.frame, windowID: data.windowID, ownerPID: data.ownerPID)
         }
     }
 
@@ -97,7 +180,7 @@ enum AccessibilityMenuBarHelper {
         // which process is frontmost.
         guard let children = extrasMenuBarChildren() else { return [] }
 
-        var seen: [String: (icon: NSImage?, frame: CGRect)] = [:]
+        var seen: [String: (icon: NSImage?, frame: CGRect, ownerPID: pid_t)] = [:]
         var counts: [String: Int] = [:]
 
         for child in children {
@@ -119,204 +202,15 @@ enum AccessibilityMenuBarHelper {
 
             counts[info.name, default: 0] += 1
             if seen[info.name] == nil {
-                seen[info.name] = (icon: info.icon, frame: info.frame)
+                seen[info.name] = (icon: info.icon, frame: info.frame, ownerPID: info.ownerPID)
             }
         }
 
         return counts.sorted(by: { $0.key < $1.key }).map { name, count in
             let displayName = count > 1 ? "\(name) (\(count))" : name
             let data = seen[name]!
-            return HiddenItemInfo(name: displayName, icon: data.icon, frame: data.frame)
+            return HiddenItemInfo(name: displayName, icon: data.icon, frame: data.frame, windowID: 0, ownerPID: data.ownerPID)
         }
-    }
-
-    // MARK: - Menu Interaction
-
-    /// Perform AXPress on the menu bar item at the given frame position.
-    /// The item must be visible on screen (not pushed off) for this to work.
-    @discardableResult
-    static func pressItem(at frame: CGRect) -> Bool {
-        guard isGranted else { return false }
-
-        let systemWide = AXUIElementCreateSystemWide()
-        var element: AXUIElement?
-
-        let result = AXUIElementCopyElementAtPosition(
-            systemWide, Float(frame.midX), Float(frame.midY), &element
-        )
-        guard result == .success, let element else { return false }
-
-        let role = axStringAttribute(element, kAXRoleAttribute)
-        let subrole = axStringAttribute(element, kAXSubroleAttribute)
-        guard role == "AXMenuBarItem" && subrole == "AXMenuExtra" else { return false }
-
-        return AXUIElementPerformAction(element, kAXPressAction as CFString) == .success
-    }
-
-    /// Press a menu bar extra by matching its resolved name via AX tree traversal.
-    /// Unlike `pressItem(at:)`, this works for items behind the notch because
-    /// it doesn't depend on screen position for element discovery.
-    /// - Parameters:
-    ///   - name: The display name (as shown in the context menu). May include " (N)" suffix.
-    ///   - screenY: The Y coordinate of the menu bar (for filtering to the correct screen).
-    /// - Returns: The AX frame of the pressed element (for menu dismissal polling), or nil on failure.
-    static func pressItemByName(_ name: String, screenY: CGFloat) -> CGRect? {
-        guard isGranted else {
-            snugLog("pressItemByName: AX not granted!")
-            return nil
-        }
-        guard let children = extrasMenuBarChildren() else {
-            snugLog("pressItemByName: extrasMenuBarChildren returned nil")
-            return nil
-        }
-
-        let targetBase = stripCountSuffix(name)
-        snugLog("pressItemByName: looking for '%@' (base='%@') among %d children, screenY=%.0f",
-              name, targetBase, children.count, screenY)
-
-        var childIndex = 0
-        for child in children {
-            let role = axStringAttribute(child, kAXRoleAttribute)
-            let subrole = axStringAttribute(child, kAXSubroleAttribute)
-            if role != "AXMenuBarItem" || subrole != "AXMenuExtra" {
-                childIndex += 1
-                continue
-            }
-
-            let frame = axFrame(of: child)
-
-            // Filter to correct screen by Y coordinate
-            let yDiff = abs(frame.midY - screenY)
-            if yDiff >= 30 {
-                snugLog("  child[%d]: frame=(%.0f,%.0f,%.0f,%.0f) SKIPPED yDiff=%.0f",
-                      childIndex, frame.origin.x, frame.origin.y, frame.width, frame.height, yDiff)
-                childIndex += 1
-                continue
-            }
-
-            // Resolve name using the same logic as resolveElement
-            guard let info = resolveElement(child, frame: frame) else {
-                snugLog("  child[%d]: frame=(%.0f,%.0f) resolveElement returned nil",
-                      childIndex, frame.origin.x, frame.origin.y)
-                childIndex += 1
-                continue
-            }
-            let childBase = stripCountSuffix(info.name)
-
-            snugLog("  child[%d]: name='%@' (base='%@') frame=(%.0f,%.0f,%.0f,%.0f) match=%d",
-                  childIndex, info.name, childBase, frame.origin.x, frame.origin.y,
-                  frame.width, frame.height, childBase == targetBase ? 1 : 0)
-
-            if childBase == targetBase {
-                // Try AXPress first (preferred — works directly on the element)
-                let result = AXUIElementPerformAction(child, kAXPressAction as CFString)
-                if result == .success {
-                    snugLog("pressItemByName: AXPress SUCCEEDED for '%@' at (%.0f,%.0f,%.0f,%.0f)",
-                          name, frame.origin.x, frame.origin.y, frame.width, frame.height)
-                    return frame
-                }
-
-                snugLog("pressItemByName: AXPress FAILED (error=%d) for '%@' at (%.0f,%.0f), trying CGEvent click",
-                      result.rawValue, name, frame.origin.x, frame.origin.y)
-
-                // Fallback: simulate a mouse click at the element's position.
-                let clickPoint = CGPoint(x: frame.midX, y: frame.midY)
-                snugLog("pressItemByName: CGEvent click target=(%.1f,%.1f)", clickPoint.x, clickPoint.y)
-
-                if let mouseDown = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown,
-                                           mouseCursorPosition: clickPoint, mouseButton: .left),
-                   let mouseUp = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp,
-                                         mouseCursorPosition: clickPoint, mouseButton: .left) {
-                    mouseDown.post(tap: .cghidEventTap)
-                    usleep(50_000) // 50ms between down/up
-                    mouseUp.post(tap: .cghidEventTap)
-                    snugLog("pressItemByName: CGEvent click SENT for '%@' at (%.1f,%.1f)", name, clickPoint.x, clickPoint.y)
-                    return frame
-                }
-
-                snugLog("pressItemByName: CGEvent creation FAILED for '%@'", name)
-            }
-            childIndex += 1
-        }
-
-        snugLog("pressItemByName: could NOT find '%@' among %d children", name, children.count)
-        return nil
-    }
-
-    /// Strip " (N)" count suffix from a display name for comparison.
-    private static func stripCountSuffix(_ name: String) -> String {
-        if let range = name.range(of: #" \(\d+\)$"#, options: .regularExpression) {
-            return String(name[..<range.lowerBound])
-        }
-        return name
-    }
-
-    /// Check whether the menu bar item at the given position currently has its menu open.
-    /// Returns true if the AX element has children (the open menu).
-    static func isMenuOpen(at frame: CGRect) -> Bool {
-        guard isGranted else { return false }
-
-        let systemWide = AXUIElementCreateSystemWide()
-        var element: AXUIElement?
-
-        let result = AXUIElementCopyElementAtPosition(
-            systemWide, Float(frame.midX), Float(frame.midY), &element
-        )
-        guard result == .success, let element else { return false }
-
-        var children: AnyObject?
-        let childResult = AXUIElementCopyAttributeValue(
-            element, kAXChildrenAttribute as CFString, &children
-        )
-        guard childResult == .success, let childArray = children as? [AXUIElement] else {
-            return false
-        }
-
-        return !childArray.isEmpty
-    }
-
-    /// Check whether a menu bar item's menu is open using AX tree traversal (name-based).
-    /// Unlike `isMenuOpen(at:)`, this works for items behind the notch because it
-    /// doesn't depend on screen position for element discovery.
-    static func isMenuOpenByName(_ name: String, screenY: CGFloat) -> Bool {
-        guard isGranted else { return false }
-        guard let children = extrasMenuBarChildren() else {
-            snugLog("isMenuOpenByName: extrasMenuBarChildren returned nil for '%@'", name)
-            return false
-        }
-
-        let targetBase = stripCountSuffix(name)
-
-        for child in children {
-            let role = axStringAttribute(child, kAXRoleAttribute)
-            let subrole = axStringAttribute(child, kAXSubroleAttribute)
-            guard role == "AXMenuBarItem" && subrole == "AXMenuExtra" else { continue }
-
-            let frame = axFrame(of: child)
-            guard abs(frame.midY - screenY) < 30 else { continue }
-
-            guard let info = resolveElement(child, frame: frame) else { continue }
-            let childBase = stripCountSuffix(info.name)
-
-            if childBase == targetBase {
-                // Check if this element has children (the open menu)
-                var childrenValue: AnyObject?
-                let childResult = AXUIElementCopyAttributeValue(
-                    child, kAXChildrenAttribute as CFString, &childrenValue
-                )
-                if childResult == .success,
-                   let childArray = childrenValue as? [AXUIElement],
-                   !childArray.isEmpty {
-                    snugLog("isMenuOpenByName: '%@' HAS children (%d) -> menu IS open", name, childArray.count)
-                    return true
-                }
-                snugLog("isMenuOpenByName: '%@' has NO children (result=%d) -> menu NOT open", name, childResult.rawValue)
-                return false
-            }
-        }
-
-        snugLog("isMenuOpenByName: could not find '%@' among children -> returning false", name)
-        return false
     }
 
     // MARK: - Private
@@ -412,7 +306,7 @@ enum AccessibilityMenuBarHelper {
     }
 
     /// Resolve name + icon from an AXUIElement that is known to be a menu bar extra.
-    private static func resolveElement(_ element: AXUIElement, frame: CGRect) -> HiddenItemInfo? {
+    private static func resolveElement(_ element: AXUIElement, frame: CGRect, windowID: CGWindowID = 0) -> HiddenItemInfo? {
         var pid: pid_t = 0
         let app: NSRunningApplication?
         if AXUIElementGetPid(element, &pid) == .success {
@@ -477,7 +371,7 @@ enum AccessibilityMenuBarHelper {
             return scaled
         }()
 
-        return HiddenItemInfo(name: name, icon: icon, frame: frame)
+        return HiddenItemInfo(name: name, icon: icon, frame: frame, windowID: windowID, ownerPID: pid)
     }
 
     /// Read the screen frame of an AX element via its position + size attributes.

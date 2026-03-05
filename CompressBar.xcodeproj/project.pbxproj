@@ -22,6 +22,7 @@
 		A18E180EA3E4114AE1CE4E12 /* MenuBarItemManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7066230EEF5D01B9DEDDA713 /* MenuBarItemManager.swift */; };
 		AA7EEAF2A2668EC6ED359011 /* Permissions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5881D56DD1347D02C7E2F2B0 /* Permissions.swift */; };
 		C93E26DFA31E755B979045B7 /* StatusBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9986A02C6BEFFD28D3AC4339 /* StatusBarController.swift */; };
+
 		E479E0EC25D8C62C8EBA9B73 /* MenuBarItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12064846ABB8A64F1DD311AC /* MenuBarItem.swift */; };
 		D1E2F3A4B5C6D7E8F9A0B1C2 /* SnugLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6A7B8C9D0E1F2 /* SnugLog.swift */; };
 /* End PBXBuildFile section */
@@ -39,6 +40,7 @@
 		6A9D15D8F91284EA00F2E122 /* SnugApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnugApp.swift; sourceTree = "<group>"; };
 		7066230EEF5D01B9DEDDA713 /* MenuBarItemManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarItemManager.swift; sourceTree = "<group>"; };
 		9986A02C6BEFFD28D3AC4339 /* StatusBarController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBarController.swift; sourceTree = "<group>"; };
+
 		A44E3CEAFCDE83742468D6BF /* Bundle+Version.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Bundle+Version.swift"; sourceTree = "<group>"; };
 		AAA7E955C5A328B2FDDC49FB /* SettingsOpener.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsOpener.swift; sourceTree = "<group>"; };
 		B16A60D20C7860D6BE5D217E /* AboutSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AboutSettingsView.swift; sourceTree = "<group>"; };
