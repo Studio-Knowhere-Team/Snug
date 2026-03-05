@@ -1,0 +1,26 @@
+# Xcode
+build/
+DerivedData/
+*.xcodeproj/
+*.xcuserstate
+xcschememanagement.plist
+
+# macOS
+.DS_Store
+._*
+
+# DMG build artifacts
+*.dmg
+dmg_resources/
+dmg_staging/
+
+# Xcode export artifacts
+Snug *.app
+Snug 20*/
+
+# Claude Code
+.claude/
+
+# Misc
+*.swp
+*~

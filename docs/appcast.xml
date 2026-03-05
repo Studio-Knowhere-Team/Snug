@@ -1,0 +1,21 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/" version="2.0">
+    <channel>
+        <title>Snug</title>
+        <link>https://raw.githubusercontent.com/Studio-Knowhere-Team/Snug/master/docs/appcast.xml</link>
+        <description>Snug update feed</description>
+        <language>en</language>
+        <item>
+            <title>Version 1.0.1</title>
+            <pubDate>Mon, 30 Mar 2026 16:57:00 +0100</pubDate>
+            <sparkle:version>2</sparkle:version>
+            <sparkle:shortVersionString>1.0.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure
+                url="https://github.com/Studio-Knowhere-Team/Snug/releases/download/v1.0.1/Snug-1.0.1.dmg"
+                sparkle:edSignature="VIHuIkveg3LIPfoU6FJuvER0VaEZTByoClCJ2iyvT75K1owY/U/pRh+c+1YG0uXSDweyIcLL91kpsN8OMs3gCA=="
+                length="1615737"
+                type="application/octet-stream"/>
+        </item>
+    </channel>
+</rss>
