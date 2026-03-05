@@ -161,45 +161,68 @@ enum AccessibilityMenuBarHelper {
     ///   - screenY: The Y coordinate of the menu bar (for filtering to the correct screen).
     /// - Returns: The AX frame of the pressed element (for menu dismissal polling), or nil on failure.
     static func pressItemByName(_ name: String, screenY: CGFloat) -> CGRect? {
-        guard isGranted else { return nil }
+        guard isGranted else {
+            snugLog("pressItemByName: AX not granted!")
+            return nil
+        }
         guard let children = extrasMenuBarChildren() else {
-            NSLog("[Snug] pressItemByName: extrasMenuBarChildren returned nil")
+            snugLog("pressItemByName: extrasMenuBarChildren returned nil")
             return nil
         }
 
         let targetBase = stripCountSuffix(name)
-        NSLog("[Snug] pressItemByName: looking for '%@' (base='%@') among %d children, screenY=%.0f",
+        snugLog("pressItemByName: looking for '%@' (base='%@') among %d children, screenY=%.0f",
               name, targetBase, children.count, screenY)
 
+        var childIndex = 0
         for child in children {
             let role = axStringAttribute(child, kAXRoleAttribute)
             let subrole = axStringAttribute(child, kAXSubroleAttribute)
-            guard role == "AXMenuBarItem" && subrole == "AXMenuExtra" else { continue }
+            if role != "AXMenuBarItem" || subrole != "AXMenuExtra" {
+                childIndex += 1
+                continue
+            }
 
             let frame = axFrame(of: child)
 
             // Filter to correct screen by Y coordinate
-            guard abs(frame.midY - screenY) < 30 else { continue }
+            let yDiff = abs(frame.midY - screenY)
+            if yDiff >= 30 {
+                snugLog("  child[%d]: frame=(%.0f,%.0f,%.0f,%.0f) SKIPPED yDiff=%.0f",
+                      childIndex, frame.origin.x, frame.origin.y, frame.width, frame.height, yDiff)
+                childIndex += 1
+                continue
+            }
 
             // Resolve name using the same logic as resolveElement
-            guard let info = resolveElement(child, frame: frame) else { continue }
+            guard let info = resolveElement(child, frame: frame) else {
+                snugLog("  child[%d]: frame=(%.0f,%.0f) resolveElement returned nil",
+                      childIndex, frame.origin.x, frame.origin.y)
+                childIndex += 1
+                continue
+            }
             let childBase = stripCountSuffix(info.name)
+
+            snugLog("  child[%d]: name='%@' (base='%@') frame=(%.0f,%.0f,%.0f,%.0f) match=%d",
+                  childIndex, info.name, childBase, frame.origin.x, frame.origin.y,
+                  frame.width, frame.height, childBase == targetBase ? 1 : 0)
 
             if childBase == targetBase {
                 // Try AXPress first (preferred — works directly on the element)
                 let result = AXUIElementPerformAction(child, kAXPressAction as CFString)
                 if result == .success {
-                    NSLog("[Snug] pressItemByName: AXPress succeeded for '%@' at (%.0f,%.0f)", name, frame.origin.x, frame.origin.y)
+                    snugLog("pressItemByName: AXPress SUCCEEDED for '%@' at (%.0f,%.0f,%.0f,%.0f)",
+                          name, frame.origin.x, frame.origin.y, frame.width, frame.height)
                     return frame
                 }
 
-                NSLog("[Snug] pressItemByName: AXPress failed (error=%d) for '%@' at (%.0f,%.0f), trying CGEvent click",
+                snugLog("pressItemByName: AXPress FAILED (error=%d) for '%@' at (%.0f,%.0f), trying CGEvent click",
                       result.rawValue, name, frame.origin.x, frame.origin.y)
 
                 // Fallback: simulate a mouse click at the element's position.
-                // This works even for items behind the notch — macOS processes
-                // click events at positions obscured by the hardware cutout.
                 let clickPoint = CGPoint(x: frame.midX, y: frame.midY)
+                snugLog("pressItemByName: CGEvent click target=(%.1f,%.1f)", clickPoint.x, clickPoint.y)
+
                 if let mouseDown = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown,
                                            mouseCursorPosition: clickPoint, mouseButton: .left),
                    let mouseUp = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp,
@@ -207,15 +230,16 @@ enum AccessibilityMenuBarHelper {
                     mouseDown.post(tap: .cghidEventTap)
                     usleep(50_000) // 50ms between down/up
                     mouseUp.post(tap: .cghidEventTap)
-                    NSLog("[Snug] pressItemByName: CGEvent click sent for '%@' at (%.0f,%.0f)", name, clickPoint.x, clickPoint.y)
+                    snugLog("pressItemByName: CGEvent click SENT for '%@' at (%.1f,%.1f)", name, clickPoint.x, clickPoint.y)
                     return frame
                 }
 
-                NSLog("[Snug] pressItemByName: CGEvent creation failed for '%@'", name)
+                snugLog("pressItemByName: CGEvent creation FAILED for '%@'", name)
             }
+            childIndex += 1
         }
 
-        NSLog("[Snug] pressItemByName: could not find '%@' among children", name)
+        snugLog("pressItemByName: could NOT find '%@' among %d children", name, children.count)
         return nil
     }
 
@@ -256,7 +280,10 @@ enum AccessibilityMenuBarHelper {
     /// doesn't depend on screen position for element discovery.
     static func isMenuOpenByName(_ name: String, screenY: CGFloat) -> Bool {
         guard isGranted else { return false }
-        guard let children = extrasMenuBarChildren() else { return false }
+        guard let children = extrasMenuBarChildren() else {
+            snugLog("isMenuOpenByName: extrasMenuBarChildren returned nil for '%@'", name)
+            return false
+        }
 
         let targetBase = stripCountSuffix(name)
 
@@ -280,12 +307,15 @@ enum AccessibilityMenuBarHelper {
                 if childResult == .success,
                    let childArray = childrenValue as? [AXUIElement],
                    !childArray.isEmpty {
+                    snugLog("isMenuOpenByName: '%@' HAS children (%d) -> menu IS open", name, childArray.count)
                     return true
                 }
+                snugLog("isMenuOpenByName: '%@' has NO children (result=%d) -> menu NOT open", name, childResult.rawValue)
                 return false
             }
         }
 
+        snugLog("isMenuOpenByName: could not find '%@' among children -> returning false", name)
         return false
     }
 
@@ -297,13 +327,11 @@ enum AccessibilityMenuBarHelper {
         // Build list of PIDs to try (deduplicated, order matters)
         var tried = Set<pid_t>()
         var pids: [pid_t] = []
+        let ownPID = ProcessInfo.processInfo.processIdentifier
 
         func add(_ pid: pid_t) {
             if tried.insert(pid).inserted { pids.append(pid) }
         }
-
-        // Our own app
-        add(ProcessInfo.processInfo.processIdentifier)
 
         // Frontmost app (often has the attribute)
         if let front = NSWorkspace.shared.frontmostApplication {
@@ -331,23 +359,55 @@ enum AccessibilityMenuBarHelper {
             add(suis.processIdentifier)
         }
 
+        snugLog("extrasMenuBarChildren: trying %d PIDs: %@ (ownPID=%d excluded from early return)",
+              pids.count, pids.map { String($0) }.joined(separator: ", "), ownPID)
+
+        // Try all PIDs and return the LARGEST set of children.
+        // Our own app (Snug) may return its own 2 status items via AXExtrasMenuBar,
+        // which would incorrectly shadow the real extras from Control Centre.
+        // By picking the largest set, we get the actual third-party items.
+        var bestChildren: [AXUIElement]?
+        var bestCount = 0
+        var bestPID: pid_t = 0
+
         for pid in pids {
             let app = AXUIElementCreateApplication(pid)
             var extrasBarValue: AnyObject?
             let barResult = AXUIElementCopyAttributeValue(
                 app, "AXExtrasMenuBar" as CFString, &extrasBarValue
             )
-            guard barResult == .success, let extrasBar = extrasBarValue else { continue }
+            if barResult != .success {
+                snugLog("  pid %d: AXExtrasMenuBar failed (error=%d)", pid, barResult.rawValue)
+                continue
+            }
+            guard let extrasBar = extrasBarValue else {
+                snugLog("  pid %d: AXExtrasMenuBar nil value", pid)
+                continue
+            }
 
             var childrenValue: AnyObject?
-            AXUIElementCopyAttributeValue(
+            let childResult = AXUIElementCopyAttributeValue(
                 extrasBar as! AXUIElement, kAXChildrenAttribute as CFString, &childrenValue
             )
             if let children = childrenValue as? [AXUIElement], !children.isEmpty {
-                return children
+                snugLog("  pid %d: found %d children%@", pid, children.count,
+                      pid == ownPID ? " (own app)" : "")
+                if children.count > bestCount {
+                    bestChildren = children
+                    bestCount = children.count
+                    bestPID = pid
+                }
+            } else {
+                snugLog("  pid %d: AXExtrasMenuBar found but children empty/nil (result=%d)", pid, childResult.rawValue)
             }
         }
 
+        if let bestChildren {
+            snugLog("extrasMenuBarChildren: returning %d children from pid %d", bestCount, bestPID)
+            return bestChildren
+        }
+
+        snugLog("extrasMenuBarChildren: all PIDs exhausted, returning nil")
         return nil
     }
 
@@ -367,7 +427,7 @@ enum AccessibilityMenuBarHelper {
         let axIdent = axStringAttribute(element, "AXIdentifier")
         let appName = app?.localizedName
 
-        NSLog("[Snug] resolveElement: pid=%d app=%@ desc=%@ help=%@ title=%@ ident=%@ frame=(%.0f,%.0f)",
+        snugLog("resolveElement: pid=%d app=%@ desc=%@ help=%@ title=%@ ident=%@ frame=(%.0f,%.0f)",
               pid, appName ?? "nil", axDesc ?? "nil", axHelp ?? "nil",
               axTitle ?? "nil", axIdent ?? "nil", frame.origin.x, frame.origin.y)
 
@@ -402,7 +462,7 @@ enum AccessibilityMenuBarHelper {
         }()
 
         guard let name, !name.isEmpty else {
-            NSLog("[Snug] resolveElement: FAILED to resolve name for pid=%d at (%.0f,%.0f)",
+            snugLog("resolveElement: FAILED to resolve name for pid=%d at (%.0f,%.0f)",
                   pid, frame.origin.x, frame.origin.y)
             return nil
         }
