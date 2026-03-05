@@ -47,9 +47,6 @@ final class StatusBarController: NSObject {
     /// Pre-resolved info (name + icon) from when items were still visible on screen
     private var cachedHiddenItemInfo: [HiddenItemInfo] = []
 
-    /// Whether we've already run the AX capabilities dump (one-shot)
-    private var didDumpAXCapabilities = false
-
     /// Whether the current display has a notch
     private var hasNotch: Bool = false
 
@@ -504,12 +501,6 @@ final class StatusBarController: NSObject {
                   cachedHiddenItemInfo.map { $0.name }.joined(separator: ", "))
         }
 
-        // One-shot: dump all AX capabilities for menu bar extras
-        if !didDumpAXCapabilities && AccessibilityMenuBarHelper.isGranted {
-            didDumpAXCapabilities = true
-            AccessibilityMenuBarHelper.dumpAXCapabilities()
-        }
-
         isCollapsed = true
         updateToggleIcon()
 
@@ -692,8 +683,6 @@ final class StatusBarController: NSObject {
         }
     }
 
-    // MARK: - Context Menu
-
     // MARK: - Actions
 
     @objc private func toggleButtonPressed(_ sender: NSStatusBarButton) {
@@ -825,18 +814,6 @@ final class StatusBarController: NSObject {
         }
     }
 
-    /// Activate (bring to foreground) the app that owns a status item.
-    /// Used as a fallback for behind-notch items that can't be revealed.
-    private func activateApp(pid: pid_t) {
-        guard pid != 0,
-              let app = NSRunningApplication(processIdentifier: pid) else {
-            snugLog(" activateApp: invalid pid=%d", pid)
-            return
-        }
-        snugLog(" activateApp: activating '%@' (pid=%d)", app.localizedName ?? "unknown", pid)
-        app.activate()
-    }
-
     // MARK: - Partial Expansion Helpers
 
     /// Calculate separator length that reveals items up to a given natural X position.
@@ -896,10 +873,6 @@ final class StatusBarController: NSObject {
             autoHideTimer?.invalidate()
             autoHideTimer = nil
         }
-    }
-
-    @objc private func forceFullExpandAction() {
-        forceFullExpand()
     }
 
     // MARK: - Preference Change Handlers
