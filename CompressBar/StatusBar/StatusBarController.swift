@@ -32,7 +32,7 @@ final class StatusBarController: NSObject {
     private var isToggling = false
 
     /// Width used to push items off-screen (recalculated on screen changes)
-    private var collapseLength: CGFloat = 4000
+    private var collapseLength: CGFloat = 10000
 
     private(set) var isCollapsed: Bool = false
 
@@ -276,18 +276,35 @@ final class StatusBarController: NSObject {
     // MARK: - Notch Detection
 
     private func calculateSafeLeftX() {
-        hasNotch = NSStatusBar.system.thickness > 30
+        // NSStatusBar.system.thickness is deprecated and always returns 22 —
+        // useless for notch detection. Use NSScreen.safeAreaInsets instead:
+        // on notched MacBooks, safeAreaInsets.top > 0.
+        let screen = toggleItem.button?.window?.screen ?? NSScreen.screens.first
 
-        if hasNotch {
-            // Use the menu bar screen (primary display), not NSScreen.main
-            // which follows keyboard focus and may be a non-notched external.
-            let screen = toggleItem.button?.window?.screen ?? NSScreen.screens.first
-            safeLeftX = (screen?.frame.width ?? 1728) / 2 + 120
+        if #available(macOS 12.0, *), let screen {
+            hasNotch = screen.safeAreaInsets.top > 0
+        } else {
+            hasNotch = false
+        }
+
+        if hasNotch, let screen {
+            // Use auxiliaryTopRightArea if available — it gives the exact
+            // rectangle to the right of the camera housing (notch).
+            // Its left edge (origin.x) is where the safe area begins.
+            if #available(macOS 12.0, *),
+               let rightArea = screen.auxiliaryTopRightArea {
+                // auxiliaryTopRightArea is in screen-local coords;
+                // add screen origin for global Quartz/Cocoa X.
+                safeLeftX = screen.frame.origin.x + rightArea.origin.x
+            } else {
+                // Fallback: approximate notch as ~240pt wide centered on screen
+                safeLeftX = screen.frame.origin.x + screen.frame.width / 2 + 120
+            }
         } else {
             safeLeftX = 80
         }
-        snugLog(" calculateSafeLeftX: hasNotch=%d, safeLeftX=%.0f, thickness=%.0f",
-              hasNotch ? 1 : 0, safeLeftX, NSStatusBar.system.thickness)
+        snugLog(" calculateSafeLeftX: hasNotch=%d, safeLeftX=%.0f",
+              hasNotch ? 1 : 0, safeLeftX)
     }
 
     // MARK: - Hidden Items
@@ -405,28 +422,10 @@ final class StatusBarController: NSObject {
     }
 
     private func applySmartExpansion() {
-        let targetLength: CGFloat
-
-        if !hasNotch {
-            targetLength = NSStatusItem.variableLength
-        } else {
-            // Only expand enough to show items that fit before the notch
-            let sorted = cachedNaturalPositions.sorted { $0.naturalX > $1.naturalX }
-            let fitting = sorted.filter { $0.naturalX >= safeLeftX }
-
-            if fitting.isEmpty {
-                targetLength = NSStatusItem.variableLength
-            } else {
-                let leftmostFitting = fitting.last!
-                let extra = max(0, leftmostFitting.naturalX - safeLeftX)
-                targetLength = 9 + extra
-            }
-        }
-
         isCollapsed = false
         updateToggleIcon()
 
-        separatorItem.length = targetLength
+        separatorItem.length = NSStatusItem.variableLength
         autoCollapseIfNeeded()
     }
 
@@ -630,18 +629,48 @@ final class StatusBarController: NSObject {
         // Safety: if the separator was cmd-dragged to the wrong side, fix it.
         ensureSeparatorIsLeftOfToggle()
 
-        snugLog(" expandMenuBar: cachedHiddenItemInfo=%d before discoverNaturalPositions",
+        snugLog(" expandMenuBar: cachedHiddenItemInfo=%d",
               cachedHiddenItemInfo.count)
 
-        // Always rediscover natural positions on every expand.
-        // This ensures accuracy if apps launched/quit while collapsed.
-        discoverNaturalPositions { [weak self] in
+        // Update the toggle icon first (fade) so it transitions smoothly
+        // at the same moment the items appear — not 250ms after.
+        isCollapsed = false
+        updateToggleIcon()
+
+        // Reveal items instantly.
+        separatorItem.length = NSStatusItem.variableLength
+
+        // Refresh caches after items have settled.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
             guard let self else { return }
-            snugLog(" expandMenuBar: cachedHiddenItemInfo=%d after discoverNaturalPositions",
-                  self.cachedHiddenItemInfo.count)
-            self.applySmartExpansion()
+            self.refreshHiddenItemCache()
+            self.autoCollapseIfNeeded()
             self.isToggling = false
         }
+    }
+
+    /// Refresh hidden item caches after expand (items are at natural positions).
+    private func refreshHiddenItemCache() {
+        itemManager.refreshItems()
+        let hidden = itemsLeftOfSeparator()
+        cachedNaturalPositions = hidden
+            .map { (windowID: $0.windowID, naturalX: $0.frame.minX) }
+        cachedHiddenItems = hidden
+
+        let freshInfo = AccessibilityMenuBarHelper.resolveItems(for: hidden)
+        if postCollapseItemCount > freshInfo.count &&
+           cachedHiddenItemInfo.count > freshInfo.count {
+            let freshNames = Set(freshInfo.map { baseName(of: $0.name) })
+            let preserved = cachedHiddenItemInfo.filter {
+                !freshNames.contains(baseName(of: $0.name))
+            }
+            cachedHiddenItemInfo = freshInfo + preserved
+            cachedHiddenItemInfo.sort { $0.name < $1.name }
+        } else {
+            cachedHiddenItemInfo = freshInfo
+        }
+        snugLog(" refreshHiddenItemCache: hidden=%d, resolved=%d",
+              hidden.count, cachedHiddenItemInfo.count)
     }
 
     private func forceFullExpand() {
@@ -673,7 +702,7 @@ final class StatusBarController: NSObject {
 
     private func updateCollapseLength() {
         let screenWidth = NSScreen.main?.frame.width ?? 1728
-        let newLength = min(max(screenWidth + 200, 500), 4000)
+        let newLength = max(screenWidth + 200, 500)
 
         let wasCollapsed = isCollapsed
         collapseLength = newLength
@@ -758,107 +787,36 @@ final class StatusBarController: NSObject {
     }
 
     /// Handle clicking a hidden item in the context menu.
-    /// Expands the bar to reveal the item, then AXPresses it to open its status menu.
+    /// Expands to natural width so the item is on-screen, then AXPresses it.
     @objc private func hiddenItemClicked(_ sender: NSMenuItem) {
         guard let info = sender.representedObject as? HiddenItemInfo else { return }
 
-        snugLog(" hiddenItemClicked: '%@' windowID=%d ownerPID=%d",
-              info.name, info.windowID, info.ownerPID)
+        snugLog(" hiddenItemClicked: '%@' ownerPID=%d", info.name, info.ownerPID)
 
-        // Try partial expansion to reveal just this item
-        if let partialLength = partialSeparatorLength(
-            for: info.frame.origin.x,
-            clickedWindowID: info.windowID
-        ) {
-            snugLog(" hiddenItemClicked: partial expand to length=%.0f", partialLength)
-            separatorItem.length = partialLength
-            isCollapsed = false
-            isToggling = false
-            updateToggleIcon()
+        // Expand to natural width — AXPress needs the item on-screen.
+        separatorItem.length = NSStatusItem.variableLength
+        isCollapsed = false
+        updateToggleIcon()
 
-            // After expansion settles, AXPress the item to open its menu
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-                guard let self else { return }
-                self.pressRevealedItem(info)
-                self.autoCollapseIfNeeded()
+        // After expansion settles, AXPress the item to open its menu.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            guard let self else { return }
+
+            self.itemManager.refreshItems()
+            let freshFrame = self.itemManager.items
+                .first(where: { $0.windowID == info.windowID })?.frame ?? info.frame
+
+            let pressed = AccessibilityMenuBarHelper.pressItem(
+                named: info.name,
+                ownerPID: info.ownerPID,
+                fallbackFrame: freshFrame
+            )
+            if !pressed {
+                snugLog(" hiddenItemClicked: AXPress failed for '%@'", info.name)
             }
-        } else {
-            // Can't partially expand (leftmost item or no match) — full expand
-            snugLog(" hiddenItemClicked: full expand (partial returned nil)")
-            expandCollapseIfNeeded()
 
-            // After full expansion settles, try AXPress
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
-                guard let self else { return }
-                self.pressRevealedItem(info)
-            }
+            self.autoCollapseIfNeeded()
         }
-    }
-
-    /// Try to AXPress a menu bar item after expansion.
-    /// Uses the AX tree to find the element by PID (works even if off-screen),
-    /// with a position-based fallback using fresh CGWindowList coordinates.
-    private func pressRevealedItem(_ info: HiddenItemInfo) {
-        // Get fresh coordinates for the position fallback
-        itemManager.refreshItems()
-        let freshFrame = itemManager.items
-            .first(where: { $0.windowID == info.windowID })?.frame ?? info.frame
-
-        let pressed = AccessibilityMenuBarHelper.pressItem(
-            named: info.name,
-            ownerPID: info.ownerPID,
-            fallbackFrame: freshFrame
-        )
-        if !pressed {
-            snugLog(" pressRevealedItem: AXPress failed for '%@' — item revealed for manual click", info.name)
-        }
-    }
-
-    // MARK: - Partial Expansion Helpers
-
-    /// Calculate separator length that reveals items up to a given natural X position.
-    /// Returns nil if full expansion (variableLength) should be used instead.
-    private func partialSeparatorLength(for clickedNaturalX: CGFloat,
-                                         clickedWindowID: CGWindowID) -> CGFloat? {
-        let naturalSeparatorWidth: CGFloat = 9.0
-        let margin: CGFloat = 4.0
-
-        let sorted = cachedNaturalPositions.sorted { $0.naturalX < $1.naturalX }
-
-        guard let clickedIndex = sorted.firstIndex(where: { $0.windowID == clickedWindowID }) else {
-            return nil
-        }
-
-        // If the clicked item is the leftmost, full expansion is needed
-        if clickedIndex == 0 { return nil }
-
-        let leftNeighbor = sorted[clickedIndex - 1]
-        let leftNeighborWidth: CGFloat = cachedHiddenItems
-            .first(where: { $0.windowID == leftNeighbor.windowID })?
-            .frame.width ?? 30
-
-        let leftNeighborRightEdge = leftNeighbor.naturalX + leftNeighborWidth
-        var push = leftNeighborRightEdge + margin
-
-        // If push would also hide the clicked item, fall back
-        guard push < clickedNaturalX else { return nil }
-
-        // Ensure the clicked item ends up to the right of the notch.
-        // The item's on-screen X = naturalX - push, so we need:
-        //   naturalX - push >= safeLeftX  →  push <= naturalX - safeLeftX
-        if hasNotch {
-            let maxPush = clickedNaturalX - safeLeftX
-            if maxPush <= 0 {
-                // Item is naturally behind the notch — full expand needed
-                return nil
-            }
-            push = min(push, maxPush)
-        }
-
-        let length = naturalSeparatorWidth + push
-        guard length > naturalSeparatorWidth, length < collapseLength else { return nil }
-
-        return length
     }
 
     @objc private func openPreferences() {
