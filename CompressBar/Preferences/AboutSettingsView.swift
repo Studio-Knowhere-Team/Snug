@@ -1,15 +1,18 @@
 import SwiftUI
 
 struct AboutSettingsView: View {
+    @State private var updaterController = UpdaterController.shared
+
     var body: some View {
         VStack(spacing: 16) {
             Spacer()
 
-            Image(systemName: "rectangle.compress.vertical")
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-                .frame(width: 48, height: 48)
-                .foregroundStyle(.secondary)
+            if let appIcon = NSImage(named: "AppIcon") {
+                Image(nsImage: appIcon)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 64, height: 64)
+            }
 
             Text("Snug")
                 .font(.title2.bold())
@@ -24,6 +27,11 @@ struct AboutSettingsView: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+
+            Button("Check for Updates\u{2026}") {
+                updaterController.checkForUpdates()
+            }
+            .disabled(!updaterController.canCheckForUpdates)
 
             Spacer()
         }

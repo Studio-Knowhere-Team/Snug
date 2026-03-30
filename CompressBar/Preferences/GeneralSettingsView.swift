@@ -1,11 +1,11 @@
 import SwiftUI
 import ServiceManagement
+import Sparkle
 
 struct GeneralSettingsView: View {
     @State private var preferences = AppPreferences.shared
+    @State private var updaterController = UpdaterController.shared
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
-    @State private var isRecordingShortcut = false
-    @State private var shortcutMonitor: Any?
     @State private var accessibilityGranted = AccessibilityMenuBarHelper.isGranted
     @State private var accessibilityTimer: Timer?
 
@@ -16,6 +16,13 @@ struct GeneralSettingsView: View {
                     .onChange(of: launchAtLogin) { _, newValue in
                         toggleLaunchAtLogin(newValue)
                     }
+            }
+
+            Section("Updates") {
+                Toggle("Automatically check for updates", isOn: Binding(
+                    get: { updaterController.updater.automaticallyChecksForUpdates },
+                    set: { updaterController.updater.automaticallyChecksForUpdates = $0 }
+                ))
             }
 
             Section("Auto-collapse") {
@@ -99,40 +106,6 @@ struct GeneralSettingsView: View {
                 Text("Accessibility")
             }
 
-            Section("Keyboard Shortcut") {
-                HStack {
-                    if isRecordingShortcut {
-                        Text("Press a key combination...")
-                            .foregroundStyle(.secondary)
-                    } else if let keybind = preferences.globalKeybind {
-                        Text(keybind.description)
-                            .font(.system(.body, design: .monospaced))
-                    } else {
-                        Text("None")
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Spacer()
-
-                    if isRecordingShortcut {
-                        Button("Cancel") {
-                            stopRecording()
-                        }
-                    } else {
-                        Button("Record Shortcut") {
-                            startRecording()
-                        }
-
-                        if preferences.globalKeybind != nil {
-                            Button("Clear") {
-                                preferences.globalKeybind = nil
-                                notifyHotKeyChanged()
-                            }
-                        }
-                    }
-                }
-            }
-
         }
         .formStyle(.grouped)
         .onAppear {
@@ -163,49 +136,4 @@ struct GeneralSettingsView: View {
         }
     }
 
-    // MARK: - Shortcut Recording
-
-    private func startRecording() {
-        isRecordingShortcut = true
-        shortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [self] event in
-            let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-
-            // Require at least one modifier key (not just a bare key)
-            guard !modifiers.isEmpty else {
-                if event.keyCode == 53 { // Escape
-                    stopRecording()
-                }
-                return nil
-            }
-
-            let keybind = GlobalKeybindPreferences(
-                function: modifiers.contains(.function),
-                control: modifiers.contains(.control),
-                command: modifiers.contains(.command),
-                shift: modifiers.contains(.shift),
-                option: modifiers.contains(.option),
-                capsLock: modifiers.contains(.capsLock),
-                carbonFlags: UInt32(modifiers.rawValue),
-                characters: event.charactersIgnoringModifiers ?? "",
-                keyCode: UInt32(event.keyCode)
-            )
-
-            preferences.globalKeybind = keybind
-            stopRecording()
-            notifyHotKeyChanged()
-            return nil
-        }
-    }
-
-    private func stopRecording() {
-        isRecordingShortcut = false
-        if let monitor = shortcutMonitor {
-            NSEvent.removeMonitor(monitor)
-            shortcutMonitor = nil
-        }
-    }
-
-    private func notifyHotKeyChanged() {
-        NotificationCenter.default.post(name: Notification.Name("Snug.hotkeyChanged"), object: nil)
-    }
 }

@@ -140,8 +140,22 @@ final class StatusBarController: NSObject {
         )
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            self?.registerOwnWindowIDs()
-            self?.collapseMenuBar()
+            guard let self else { return }
+            self.registerOwnWindowIDs()
+
+            // Discover items at natural width before the first collapse,
+            // so the badge count and dropdown are populated immediately.
+            self.itemManager.refreshItems()
+            let hidden = self.itemsLeftOfSeparator()
+            self.cachedNaturalPositions = hidden
+                .map { (windowID: $0.windowID, naturalX: $0.frame.minX) }
+            self.cachedHiddenItems = hidden
+            self.cachedHiddenItemInfo = AccessibilityMenuBarHelper.resolveItems(for: hidden)
+            snugLog(" setup: resolved %d items at natural width: %@",
+                  self.cachedHiddenItemInfo.count,
+                  self.cachedHiddenItemInfo.map { $0.name }.joined(separator: ", "))
+
+            self.collapseMenuBar()
         }
     }
 
@@ -431,16 +445,18 @@ final class StatusBarController: NSObject {
 
     // MARK: - Toggle Icon
 
-    /// Best-effort count of hidden third-party items.
-    /// Uses the maximum of all available counts:
-    ///   - AX-resolved info (names verified as AXMenuExtra)
-    ///   - Post-collapse CGWindowList (sees ALL items including behind-notch)
-    ///   - Natural-position CGWindowList minus 1 (fallback heuristic)
+    private static let lastHiddenCountKey = "lastHiddenItemCount"
+
+    /// Count of hidden items — same as what appears in the dropdown menu.
+    /// Falls back to the last known count (persisted across launches) when
+    /// AX hasn't resolved yet.
     private var hiddenItemCount: Int {
-        let axCount = cachedHiddenItemInfo.count
-        let postCount = postCollapseItemCount
-        let naturalCount = max(cachedNaturalPositions.count - 1, 0)
-        return max(axCount, postCount, naturalCount)
+        let live = cachedHiddenItemInfo.count
+        if live > 0 {
+            UserDefaults.standard.set(live, forKey: Self.lastHiddenCountKey)
+            return live
+        }
+        return UserDefaults.standard.integer(forKey: Self.lastHiddenCountKey)
     }
 
     private func updateToggleIcon(animated: Bool = true) {
@@ -506,6 +522,8 @@ final class StatusBarController: NSObject {
         autoHideTimer?.invalidate()
         autoHideTimer = nil
 
+        // Recalculate in case screen changed or initial value was stale.
+        updateCollapseLength()
         separatorItem.length = collapseLength
         isToggling = false
 
@@ -583,9 +601,8 @@ final class StatusBarController: NSObject {
                   self.cachedHiddenItemInfo.count, self.postCollapseItemCount,
                   self.cachedHiddenItemInfo.map { $0.name }.joined(separator: ", "))
 
-            if countChanged {
-                self.updateToggleIcon()
-            }
+            // Refresh the icon if the count may have changed.
+            self.updateToggleIcon()
         }
     }
 
@@ -602,6 +619,9 @@ final class StatusBarController: NSObject {
             // Skip Control Centre — it hosts third-party items on modern macOS,
             // so grouping by its name is meaningless.
             guard name != "Control Centre" && name != "Control Center" else { continue }
+            // Skip system widgets (same list as AccessibilityMenuBarHelper.resolveElement).
+            let systemWidgets: Set<String> = ["Audio and Video Controls", "Now Playing", "Focus"]
+            guard !systemWidgets.contains(name) else { continue }
 
             counts[name, default: 0] += 1
             if seen[name] == nil {
@@ -701,8 +721,14 @@ final class StatusBarController: NSObject {
     // MARK: - Collapse Width
 
     private func updateCollapseLength() {
-        let screenWidth = NSScreen.main?.frame.width ?? 1728
-        let newLength = max(screenWidth + 200, 500)
+        // Calculate total span across ALL connected displays so items
+        // are pushed off-screen even in multi-monitor setups (e.g. an
+        // ultrawide to the left of a MacBook).
+        let screens = NSScreen.screens
+        let minX = screens.map { $0.frame.minX }.min() ?? 0
+        let maxX = screens.map { $0.frame.maxX }.max() ?? 1728
+        let totalSpan = maxX - minX
+        let newLength = max(totalSpan + 500, 500)
 
         let wasCollapsed = isCollapsed
         collapseLength = newLength
@@ -753,17 +779,6 @@ final class StatusBarController: NSObject {
             menu.addItem(NSMenuItem.separator())
         }
 
-        let autoCollapseItem = NSMenuItem(
-            title: "Auto-collapse",
-            action: #selector(toggleAutoCollapse),
-            keyEquivalent: ""
-        )
-        autoCollapseItem.target = self
-        autoCollapseItem.state = preferences.isAutoHide ? .on : .off
-        menu.addItem(autoCollapseItem)
-
-        menu.addItem(NSMenuItem.separator())
-
         let prefsItem = NSMenuItem(
             title: "Preferences…",
             action: #selector(openPreferences),
@@ -787,18 +802,19 @@ final class StatusBarController: NSObject {
     }
 
     /// Handle clicking a hidden item in the context menu.
-    /// Expands to natural width so the item is on-screen, then AXPresses it.
+    /// Expands to natural width, Cmd+drags the item next to the separator,
+    /// then AXPresses it so its menu opens in the right place.
     @objc private func hiddenItemClicked(_ sender: NSMenuItem) {
         guard let info = sender.representedObject as? HiddenItemInfo else { return }
 
         snugLog(" hiddenItemClicked: '%@' ownerPID=%d", info.name, info.ownerPID)
 
-        // Expand to natural width — AXPress needs the item on-screen.
+        // Expand to natural width — items must be on-screen for Cmd+drag.
         separatorItem.length = NSStatusItem.variableLength
         isCollapsed = false
         updateToggleIcon()
 
-        // After expansion settles, AXPress the item to open its menu.
+        // After expansion settles, move the item next to the separator then press it.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
             guard let self else { return }
 
@@ -806,16 +822,59 @@ final class StatusBarController: NSObject {
             let freshFrame = self.itemManager.items
                 .first(where: { $0.windowID == info.windowID })?.frame ?? info.frame
 
-            let pressed = AccessibilityMenuBarHelper.pressItem(
-                named: info.name,
-                ownerPID: info.ownerPID,
-                fallbackFrame: freshFrame
-            )
-            if !pressed {
-                snugLog(" hiddenItemClicked: AXPress failed for '%@'", info.name)
-            }
+            // Target: just to the left of the separator (which is just left of our toggle).
+            let sepX = self.separatorOriginX
+            let targetX = sepX - 10  // a few px left of separator
 
-            self.autoCollapseIfNeeded()
+            // Menu bar Y in Quartz coords (top-left origin, typically ~12).
+            let menuBarY = freshFrame.midY
+
+            snugLog(" hiddenItemClicked: item at x=%.0f, separator at x=%.0f, target x=%.0f",
+                  freshFrame.midX, sepX, targetX)
+
+            // Only drag if the item isn't already next to the separator.
+            if abs(freshFrame.midX - targetX) > 30 {
+                // Dispatch the Cmd+drag on a background thread so the usleep
+                // calls don't block the main run loop.
+                DispatchQueue.global(qos: .userInteractive).async {
+                    let moved = AccessibilityMenuBarHelper.moveItem(
+                        from: freshFrame.midX,
+                        to: targetX,
+                        menuBarY: menuBarY
+                    )
+                    snugLog(" hiddenItemClicked: moveItem=%d", moved ? 1 : 0)
+
+                    // Back to main thread to press and collapse.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                        guard let self else { return }
+                        // Re-fetch position after the move.
+                        self.itemManager.refreshItems()
+                        let movedFrame = self.itemManager.items
+                            .first(where: { $0.windowID == info.windowID })?.frame ?? freshFrame
+
+                        let pressed = AccessibilityMenuBarHelper.pressItem(
+                            named: info.name,
+                            ownerPID: info.ownerPID,
+                            fallbackFrame: movedFrame
+                        )
+                        if !pressed {
+                            snugLog(" hiddenItemClicked: AXPress failed for '%@'", info.name)
+                        }
+                        self.autoCollapseIfNeeded()
+                    }
+                }
+            } else {
+                // Already close enough — just press it.
+                let pressed = AccessibilityMenuBarHelper.pressItem(
+                    named: info.name,
+                    ownerPID: info.ownerPID,
+                    fallbackFrame: freshFrame
+                )
+                if !pressed {
+                    snugLog(" hiddenItemClicked: AXPress failed for '%@'", info.name)
+                }
+                self.autoCollapseIfNeeded()
+            }
         }
     }
 

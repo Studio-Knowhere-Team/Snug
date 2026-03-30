@@ -361,6 +361,17 @@ enum AccessibilityMenuBarHelper {
             return nil
         }
 
+        // Skip system control widgets that aren't real third-party status items.
+        let systemWidgets: Set<String> = [
+            "Audio and Video Controls",
+            "Now Playing",
+            "Focus",
+        ]
+        if systemWidgets.contains(name) {
+            snugLog("resolveElement: skipping system widget '%@'", name)
+            return nil
+        }
+
         let icon: NSImage? = {
             guard let appIcon = app?.icon else { return nil }
             let size = NSSize(width: 16, height: 16)
@@ -390,6 +401,90 @@ enum AccessibilityMenuBarHelper {
             AXValueGetValue(sv as! AXValue, .cgSize, &size)
         }
         return CGRect(origin: pos, size: size)
+    }
+
+    // MARK: - Move Item (Cmd+Drag)
+
+    /// Move a menu bar extra from its current position to a target X using
+    /// synthetic Cmd+drag events.  Returns true if the drag was dispatched.
+    /// The drag happens in Quartz (top-left origin) screen coordinates.
+    /// The cursor is hidden during the operation so the user sees nothing.
+    static func moveItem(from sourceX: CGFloat, to targetX: CGFloat, menuBarY: CGFloat) -> Bool {
+        guard isGranted else { return false }
+
+        let y = menuBarY
+
+        // Save current mouse position so we can restore it afterwards.
+        let savedPos = CGEvent(source: nil)?.location ?? CGPoint(x: sourceX, y: y)
+
+        // Hide cursor so the drag is invisible to the user.
+        CGDisplayHideCursor(CGMainDisplayID())
+
+        let cmdFlag = CGEventFlags.maskCommand
+
+        // 1. Cmd + mouse-down at the item's center
+        guard let mouseDown = CGEvent(
+            mouseEventSource: nil,
+            mouseType: .leftMouseDown,
+            mouseCursorPosition: CGPoint(x: sourceX, y: y),
+            mouseButton: .left
+        ) else {
+            CGDisplayShowCursor(CGMainDisplayID())
+            return false
+        }
+        mouseDown.flags = cmdFlag
+        mouseDown.post(tap: .cghidEventTap)
+
+        // 2. Small nudge to engage the drag mode
+        usleep(10_000) // 10ms
+        let nudge = sourceX + (targetX > sourceX ? 3 : -3)
+        if let drag = CGEvent(
+            mouseEventSource: nil,
+            mouseType: .leftMouseDragged,
+            mouseCursorPosition: CGPoint(x: nudge, y: y),
+            mouseButton: .left
+        ) {
+            drag.flags = cmdFlag
+            drag.post(tap: .cghidEventTap)
+        }
+        usleep(10_000)
+
+        // 3. Drag to target in a few steps for reliability
+        let steps = 4
+        for i in 1...steps {
+            let t = CGFloat(i) / CGFloat(steps)
+            let x = sourceX + (targetX - sourceX) * t
+            if let drag = CGEvent(
+                mouseEventSource: nil,
+                mouseType: .leftMouseDragged,
+                mouseCursorPosition: CGPoint(x: x, y: y),
+                mouseButton: .left
+            ) {
+                drag.flags = cmdFlag
+                drag.post(tap: .cghidEventTap)
+            }
+            usleep(8_000) // 8ms per step
+        }
+
+        // 4. Mouse-up at the target
+        usleep(8_000)
+        if let mouseUp = CGEvent(
+            mouseEventSource: nil,
+            mouseType: .leftMouseUp,
+            mouseCursorPosition: CGPoint(x: targetX, y: y),
+            mouseButton: .left
+        ) {
+            mouseUp.flags = cmdFlag
+            mouseUp.post(tap: .cghidEventTap)
+        }
+
+        // 5. Restore cursor position and show it again.
+        usleep(5_000)
+        CGWarpMouseCursorPosition(savedPos)
+        CGDisplayShowCursor(CGMainDisplayID())
+
+        snugLog("moveItem: dragged from x=%.0f to x=%.0f (y=%.0f)", sourceX, targetX, y)
+        return true
     }
 
     private static func axStringAttribute(_ element: AXUIElement, _ attribute: String) -> String? {

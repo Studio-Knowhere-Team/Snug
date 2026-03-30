@@ -7,20 +7,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotKey: HotKey?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSLog("[Snug] applicationDidFinishLaunching called")
         AppPreferences.registerDefaults()
 
+        _ = UpdaterController.shared // Start Sparkle's update cycle
+
         statusBarController = StatusBarController()
-        NSLog("[Snug] StatusBarController created")
 
         setupHotKey()
 
-        // Prompt for Accessibility on first launch (system dialog only appears once)
-        if !AccessibilityMenuBarHelper.isGranted {
-            AccessibilityMenuBarHelper.promptForAccess()
+        // Show onboarding on first launch (handles AX permission request)
+        if !AppPreferences.shared.hasCompletedOnboarding {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                OnboardingWindow.show()
+            }
         }
-
-        openPreferencesIfNeeded()
 
         // Listen for hotkey changes from the Settings UI
         NotificationCenter.default.addObserver(
@@ -61,17 +61,4 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // MARK: - First Launch
-
-    private func openPreferencesIfNeeded() {
-        let prefs = AppPreferences.shared
-        guard prefs.isShowPreference else { return }
-
-        // Only show on first launch, then disable
-        prefs.isShowPreference = false
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            SettingsOpener.open()
-        }
-    }
 }

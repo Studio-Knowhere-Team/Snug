@@ -31,6 +31,11 @@ final class AppPreferences {
         set { UserDefaults.standard.set(newValue, forKey: Keys.isShowPreference) }
     }
 
+    var hasCompletedOnboarding: Bool {
+        get { UserDefaults.standard.bool(forKey: Keys.hasCompletedOnboarding) }
+        set { UserDefaults.standard.set(newValue, forKey: Keys.hasCompletedOnboarding) }
+    }
+
     var globalKeybind: GlobalKeybindPreferences? {
         get {
             guard let data = UserDefaults.standard.data(forKey: Keys.globalKey) else { return nil }
@@ -54,6 +59,7 @@ final class AppPreferences {
             Keys.isAutoHide: false,
             Keys.autoHideInterval: AutoHideInterval.tenSeconds.rawValue,
             Keys.isShowPreference: true,
+            Keys.hasCompletedOnboarding: false,
         ])
     }
 
@@ -62,5 +68,6 @@ final class AppPreferences {
         static let autoHideInterval = "numberOfSecondForAutoHide"
         static let isShowPreference = "isShowPreference"
         static let globalKey = "globalKey"
+        static let hasCompletedOnboarding = "hasCompletedOnboarding"
     }
 }
