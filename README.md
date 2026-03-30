@@ -27,18 +27,8 @@ Download the latest DMG from [GitHub Releases](https://github.com/Studio-Knowher
 3. When closed, the filled circle shows the count of hidden items
 4. Right-click the icon to see a list of hidden items and access preferences
 
-## Building from Source
-
-```bash
-git clone https://github.com/Studio-Knowhere-Team/Snug.git
-cd Snug
-xcodebuild -scheme Snug -configuration Release build
-```
-
-Requires Xcode 16.0+ and macOS 14.0 SDK.
-
 ## License
 
 [MIT](LICENSE)
 
-Copyright (c) 2025-2026 Mike Williams / Studio Knowhere Team
+Copyright (c) 2025-2026 Studio Knowhere Ltd
