@@ -1,0 +1,23 @@
+# Xcode
+build/
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcuserstate
+xcschememanagement.plist
+
+# macOS
+.DS_Store
+._*
+
+# DMG build artifacts
+*.dmg
+dmg_resources/
+dmg_staging/
+
+# Claude Code
+.claude/
+
+# Misc
+*.swp
+*~
