@@ -4,6 +4,8 @@ import QuartzCore
 @MainActor
 final class NotchDropdownPanel: NSObject {
 
+    // MARK: - State
+
     enum PanelState {
         case hidden
         case showing
@@ -21,14 +23,17 @@ final class NotchDropdownPanel: NSObject {
 
     var onItemSelected: ((HiddenItemInfo) -> Void)?
 
+    // MARK: - UI Elements
+
     private let panel: PanelWindow
     private let visualEffectView = NSVisualEffectView()
     private let scrollView = NSScrollView()
     private let verticalStackView = NSStackView()
 
     private var panelState: PanelState = .hidden
-    private var targetFrame: CGRect = .zero
     private var animationToken = UUID()
+
+    // MARK: - Layout Constants
 
     private let contentInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
     private let cellSize = NSSize(width: 32, height: 32)
@@ -38,6 +43,8 @@ final class NotchDropdownPanel: NSObject {
     private let maxScrollHeight: CGFloat = 160
     private let animationDuration: CFTimeInterval = 0.18
     private let cornerRadius: CGFloat = 12
+
+    // MARK: - Init
 
     override init() {
         panel = PanelWindow(
@@ -52,9 +59,21 @@ final class NotchDropdownPanel: NSObject {
         setupContentView()
     }
 
+    // MARK: - Public API
+
     func show(items: [HiddenItemInfo], below notchRect: CGRect) {
+        guard !items.isEmpty else {
+            snugLog(" NotchDropdownPanel.show: no items, skipping")
+            hide(animated: false)
+            return
+        }
+
+        snugLog(" NotchDropdownPanel.show: items=%d, notch=(%.0f, %.0f, %.0f, %.0f), state=%@",
+              items.count, notchRect.origin.x, notchRect.origin.y,
+              notchRect.width, notchRect.height, "\(panelState)")
+
         rebuildGrid(items: items, notchRect: notchRect)
-        targetFrame = frame(forContentSize: contentSize(), below: notchRect)
+        let targetFrame = frame(forContentSize: contentSize(), below: notchRect)
 
         let token = prepareForAnimation()
         let startingScale = currentScale(from: visualEffectView.layer?.presentation()) ?? currentScale(from: visualEffectView.layer) ?? 0.96
@@ -72,13 +91,19 @@ final class NotchDropdownPanel: NSObject {
             fromScale: startingScale,
             toScale: 1
         ) { [weak self] in
-            guard let self, self.animationToken == token else { return }
-            self.panelState = .visible
+            DispatchQueue.main.async {
+                guard let self, self.animationToken == token else { return }
+                self.panelState = .visible
+                snugLog(" NotchDropdownPanel: state → visible")
+            }
         }
     }
 
     func hide(animated: Bool) {
         guard panelState != .hidden else { return }
+
+        snugLog(" NotchDropdownPanel.hide: animated=%d, state=%@",
+              animated ? 1 : 0, "\(panelState)")
 
         if !animated {
             completeHide()
@@ -96,10 +121,14 @@ final class NotchDropdownPanel: NSObject {
             fromScale: startingScale,
             toScale: 0.96
         ) { [weak self] in
-            guard let self, self.animationToken == token else { return }
-            self.completeHide()
+            DispatchQueue.main.async {
+                guard let self, self.animationToken == token else { return }
+                self.completeHide()
+            }
         }
     }
+
+    // MARK: - Panel Setup
 
     private func setupPanel() {
         panel.level = .statusBar
@@ -144,6 +173,8 @@ final class NotchDropdownPanel: NSObject {
         panel.contentView = visualEffectView
     }
 
+    // MARK: - Grid Layout
+
     private func rebuildGrid(items: [HiddenItemInfo], notchRect: CGRect) {
         verticalStackView.arrangedSubviews.forEach { row in
             verticalStackView.removeArrangedSubview(row)
@@ -177,14 +208,6 @@ final class NotchDropdownPanel: NSObject {
             }
 
             verticalStackView.addArrangedSubview(rowStackView)
-        }
-
-        if rows.isEmpty {
-            let emptyRow = NSStackView()
-            emptyRow.orientation = .horizontal
-            emptyRow.alignment = .centerY
-            emptyRow.addArrangedSubview(NSView(frame: NSRect(origin: .zero, size: cellSize)))
-            verticalStackView.addArrangedSubview(emptyRow)
         }
 
         applyMaskImage()
@@ -243,8 +266,10 @@ final class NotchDropdownPanel: NSObject {
         return max(1, Int((usableWidth + gridSpacing) / (cellSize.width + gridSpacing)))
     }
 
+    // MARK: - Mask
+
     private func applyMaskImage() {
-        let size = NSSize(width: 32, height: 32)
+        let size = cellSize
         let image = NSImage(size: size, flipped: false) { rect in
             NSColor.clear.setFill()
             rect.fill()
@@ -275,6 +300,8 @@ final class NotchDropdownPanel: NSObject {
         image.resizingMode = .stretch
         visualEffectView.maskImage = image
     }
+
+    // MARK: - Animation
 
     private func prepareForAnimation() -> UUID {
         let token = UUID()
@@ -335,6 +362,7 @@ final class NotchDropdownPanel: NSObject {
         panelState = .hidden
         visualEffectView.layer?.opacity = 0
         visualEffectView.layer?.transform = CATransform3DMakeScale(0.96, 0.96, 1)
+        snugLog(" NotchDropdownPanel: state → hidden")
     }
 
     private func currentOpacity(from layer: CALayer?) -> Float? {
@@ -345,6 +373,8 @@ final class NotchDropdownPanel: NSObject {
         guard let transform = layer?.transform else { return nil }
         return CGFloat(transform.m11)
     }
+
+    // MARK: - Actions
 
     @objc private func itemButtonPressed(_ sender: Any?) {
         guard let button = sender as? HoverButton,
