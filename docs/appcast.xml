@@ -2,7 +2,7 @@
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/" version="2.0">
     <channel>
         <title>Snug</title>
-        <link>https://studio-knowhere-team.github.io/Snug/appcast.xml</link>
+        <link>https://raw.githubusercontent.com/Studio-Knowhere-Team/Snug/master/docs/appcast.xml</link>
         <description>Snug update feed</description>
         <language>en</language>
         <item>

@@ -27,7 +27,7 @@
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright © 2025–2026 Mike Williams. All rights reserved.</string>
 	<key>SUFeedURL</key>
-	<string>https://studio-knowhere-team.github.io/Snug/appcast.xml</string>
+	<string>https://raw.githubusercontent.com/Studio-Knowhere-Team/Snug/master/docs/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>GZNTvuAjf1JYL7MhQVGqb8zd9U1G01RmEw9EFw91e2M=</string>
 </dict>
