@@ -206,19 +206,21 @@ final class NotchDropdownCoordinator {
         }
 
         localEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .keyDown]) { [weak self] event in
-            guard let self else { return event }
+            MainActor.assumeIsolated {
+                guard let self else { return event }
 
-            if event.type == .keyDown, event.keyCode == 53 {
-                snugLog(" NotchDropdownCoordinator: escape pressed")
-                self.dismissPanel(animated: true, reason: "escape")
-                return nil
+                if event.type == .keyDown, event.keyCode == 53 {
+                    snugLog(" NotchDropdownCoordinator: escape pressed")
+                    self.dismissPanel(animated: true, reason: "escape")
+                    return nil
+                }
+
+                if event.type == .mouseMoved {
+                    self.handleMouseActivity()
+                }
+
+                return event
             }
-
-            if event.type == .mouseMoved {
-                self.handleMouseActivity()
-            }
-
-            return event
         }
 
         snugLog(" NotchDropdownCoordinator: monitors installed")
