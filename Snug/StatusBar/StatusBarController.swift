@@ -179,7 +179,6 @@ final class StatusBarController: NSObject {
 
     private func updateNotchDropdownItems() {
         guard let notchDropdownCoordinator else { return }
-        notchDropdownCoordinator.updateItems(cachedHiddenItemInfo)
         notchDropdownCoordinator.update(items: cachedHiddenItemInfo, notchRect: calculateNotchRect())
     }
 
