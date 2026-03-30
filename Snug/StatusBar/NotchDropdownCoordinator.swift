@@ -67,6 +67,24 @@ final class NotchDropdownCoordinator {
         }
     }
 
+    func updateItems(_ items: [HiddenItemInfo]) {
+        hiddenItems = items
+
+        snugLog(" NotchDropdownCoordinator.updateItems: items=%d", items.count)
+
+        if panel.isVisible {
+            if hiddenItems.isEmpty {
+                dismissPanel(animated: true, reason: "emptyItems")
+            } else if !notchRect.isEmpty {
+                panel.show(items: hiddenItems, below: notchRect)
+            }
+        }
+    }
+
+    func dismissPanel() {
+        dismissPanel(animated: true, reason: "externalDismiss")
+    }
+
     func stop() {
         snugLog(" NotchDropdownCoordinator.stop")
         cancelDwellTimer()

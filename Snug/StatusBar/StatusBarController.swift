@@ -24,12 +24,14 @@ final class StatusBarController: NSObject {
     // MARK: - Menu Bar Item Management
 
     private let itemManager = MenuBarItemManager()
+    private var notchDropdownCoordinator: NotchDropdownCoordinator?
 
     // MARK: - State
 
     private let preferences: AppPreferences
     private var autoHideTimer: Timer?
     private var isToggling = false
+    private var isActivatingItem = false
 
     /// Width used to push items off-screen (recalculated on screen changes)
     private var collapseLength: CGFloat = 10000
@@ -113,6 +115,7 @@ final class StatusBarController: NSObject {
 
     private func setup() {
         calculateSafeLeftX()
+        setupNotchDropdown()
         updateCollapseLength()
 
         // Configure separator — left half-circle  (
@@ -151,12 +154,33 @@ final class StatusBarController: NSObject {
                 .map { (windowID: $0.windowID, naturalX: $0.frame.minX) }
             self.cachedHiddenItems = hidden
             self.cachedHiddenItemInfo = AccessibilityMenuBarHelper.resolveItems(for: hidden)
+            self.updateNotchDropdownItems()
             snugLog(" setup: resolved %d items at natural width: %@",
                   self.cachedHiddenItemInfo.count,
                   self.cachedHiddenItemInfo.map { $0.name }.joined(separator: ", "))
 
             self.collapseMenuBar()
         }
+    }
+
+    private func setupNotchDropdown() {
+        guard hasNotch else {
+            notchDropdownCoordinator = nil
+            return
+        }
+
+        let coordinator = NotchDropdownCoordinator()
+        coordinator.onItemActivated = { [weak self] info in
+            self?.activateHiddenItem(info)
+        }
+        notchDropdownCoordinator = coordinator
+        coordinator.update(items: cachedHiddenItemInfo, notchRect: calculateNotchRect())
+    }
+
+    private func updateNotchDropdownItems() {
+        guard let notchDropdownCoordinator else { return }
+        notchDropdownCoordinator.updateItems(cachedHiddenItemInfo)
+        notchDropdownCoordinator.update(items: cachedHiddenItemInfo, notchRect: calculateNotchRect())
     }
 
     // MARK: - Icons
@@ -459,6 +483,7 @@ final class StatusBarController: NSObject {
         // Resolve names while items are still on-screen (AX needs visible positions).
         if !isCollapsed && cachedHiddenItemInfo.isEmpty {
             cachedHiddenItemInfo = AccessibilityMenuBarHelper.resolveItems(for: cachedHiddenItems)
+            updateNotchDropdownItems()
             snugLog(" collapseMenuBar: resolved %d item names: %@",
                   cachedHiddenItemInfo.count,
                   cachedHiddenItemInfo.map { $0.name }.joined(separator: ", "))
@@ -473,6 +498,7 @@ final class StatusBarController: NSObject {
         // Recalculate in case screen changed or initial value was stale.
         updateCollapseLength()
         separatorItem.length = collapseLength
+        notchDropdownCoordinator?.update(items: cachedHiddenItemInfo, notchRect: calculateNotchRect())
         isToggling = false
 
         // Post-collapse: after the separator has pushed ALL items off-screen,
@@ -525,6 +551,7 @@ final class StatusBarController: NSObject {
                 if !uniqueNew.isEmpty {
                     self.cachedHiddenItemInfo.append(contentsOf: uniqueNew)
                     self.cachedHiddenItemInfo.sort { $0.name < $1.name }
+                    self.updateNotchDropdownItems()
                 }
             }
 
@@ -542,6 +569,7 @@ final class StatusBarController: NSObject {
                           newFromAX.count, newFromAX.map { $0.name }.joined(separator: ", "))
                     self.cachedHiddenItemInfo.append(contentsOf: newFromAX)
                     self.cachedHiddenItemInfo.sort { $0.name < $1.name }
+                    self.updateNotchDropdownItems()
                 }
             }
 
@@ -595,6 +623,7 @@ final class StatusBarController: NSObject {
         // at the same moment the items appear — not 250ms after.
         isCollapsed = false
         updateToggleIcon()
+        notchDropdownCoordinator?.stop()
 
         // Reveal items instantly.
         separatorItem.length = NSStatusItem.variableLength
@@ -630,6 +659,7 @@ final class StatusBarController: NSObject {
         } else {
             cachedHiddenItemInfo = freshInfo
         }
+        updateNotchDropdownItems()
         snugLog(" refreshHiddenItemCache: hidden=%d, resolved=%d",
               hidden.count, cachedHiddenItemInfo.count)
     }
@@ -687,6 +717,8 @@ final class StatusBarController: NSObject {
     }
 
     private func showContextMenu() {
+        notchDropdownCoordinator?.dismissPanel()
+
         let menu = NSMenu()
 
         // Show all hidden items when collapsed
@@ -740,13 +772,20 @@ final class StatusBarController: NSObject {
     /// then AXPresses it so its menu opens in the right place.
     @objc private func hiddenItemClicked(_ sender: NSMenuItem) {
         guard let info = sender.representedObject as? HiddenItemInfo else { return }
+        activateHiddenItem(info)
+    }
 
-        snugLog(" hiddenItemClicked: '%@' ownerPID=%d", info.name, info.ownerPID)
+    func activateHiddenItem(_ info: HiddenItemInfo) {
+        guard !isActivatingItem else { return }
+        isActivatingItem = true
+
+        snugLog(" activateHiddenItem: '%@' ownerPID=%d", info.name, info.ownerPID)
 
         // Expand to natural width — items must be on-screen for Cmd+drag.
         separatorItem.length = NSStatusItem.variableLength
         isCollapsed = false
         updateToggleIcon()
+        notchDropdownCoordinator?.stop()
 
         // After expansion settles, move the item next to the separator then press it.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
@@ -763,7 +802,7 @@ final class StatusBarController: NSObject {
             // Menu bar Y in Quartz coords (top-left origin, typically ~12).
             let menuBarY = freshFrame.midY
 
-            snugLog(" hiddenItemClicked: item at x=%.0f, separator at x=%.0f, target x=%.0f",
+            snugLog(" activateHiddenItem: item at x=%.0f, separator at x=%.0f, target x=%.0f",
                   freshFrame.midX, sepX, targetX)
 
             // Only drag if the item isn't already next to the separator.
@@ -776,7 +815,7 @@ final class StatusBarController: NSObject {
                         to: targetX,
                         menuBarY: menuBarY
                     )
-                    snugLog(" hiddenItemClicked: moveItem=%d", moved ? 1 : 0)
+                    snugLog(" activateHiddenItem: moveItem=%d", moved ? 1 : 0)
 
                     // Back to main thread to press and collapse.
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
@@ -792,8 +831,9 @@ final class StatusBarController: NSObject {
                             fallbackFrame: movedFrame
                         )
                         if !pressed {
-                            snugLog(" hiddenItemClicked: AXPress failed for '%@'", info.name)
+                            snugLog(" activateHiddenItem: AXPress failed for '%@'", info.name)
                         }
+                        self.isActivatingItem = false
                         self.autoCollapseIfNeeded()
                     }
                 }
@@ -805,8 +845,9 @@ final class StatusBarController: NSObject {
                     fallbackFrame: freshFrame
                 )
                 if !pressed {
-                    snugLog(" hiddenItemClicked: AXPress failed for '%@'", info.name)
+                    snugLog(" activateHiddenItem: AXPress failed for '%@'", info.name)
                 }
+                self.isActivatingItem = false
                 self.autoCollapseIfNeeded()
             }
         }
@@ -830,11 +871,28 @@ final class StatusBarController: NSObject {
     // MARK: - Screen Changes
 
     @objc private func screenParametersChanged() {
-        calculateSafeLeftX()
-        updateCollapseLength()
+        notchDropdownCoordinator?.dismissPanel()
+        autoHideTimer?.invalidate()
+        autoHideTimer = nil
+        notchDropdownCoordinator?.stop()
+        notchDropdownCoordinator = nil
         cachedNaturalPositions = []
         cachedHiddenItems = []
         cachedHiddenItemInfo = []
         postCollapseItemCount = 0
+        isActivatingItem = false
+        calculateSafeLeftX()
+        updateCollapseLength()
+        setupNotchDropdown()
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            guard let self else { return }
+            if self.isCollapsed {
+                self.notchDropdownCoordinator?.update(items: self.cachedHiddenItemInfo, notchRect: self.calculateNotchRect())
+                self.postCollapseDiscovery()
+            } else {
+                self.refreshHiddenItemCache()
+            }
+        }
     }
 }
