@@ -89,7 +89,6 @@ final class NotchDropdownPanel: NSObject {
         if !shouldAnimateTransitions {
             panelState = .visible
             visualEffectView.alphaValue = 1
-            visualEffectView.layer?.opacity = 1
             visualEffectView.layer?.transform = CATransform3DIdentity
             snugLog(" NotchDropdownPanel: state → visible")
             return
@@ -139,7 +138,6 @@ final class NotchDropdownPanel: NSObject {
         visualEffectView.wantsLayer = true
         visualEffectView.autoresizingMask = [.width, .height]
         visualEffectView.alphaValue = 0
-        visualEffectView.layer?.opacity = 0
         visualEffectView.layer?.transform = hiddenTransform
 
         scrollView.drawsBackground = false
@@ -303,9 +301,8 @@ final class NotchDropdownPanel: NSObject {
     private func syncVisualStateFromPresentationLayer() {
         guard let presentation = visualEffectView.layer?.presentation(),
               let layer = visualEffectView.layer else { return }
-        layer.opacity = presentation.opacity
-        layer.transform = presentation.transform
         visualEffectView.alphaValue = CGFloat(presentation.opacity)
+        layer.transform = presentation.transform
     }
 
     private func animateShow(
@@ -315,21 +312,17 @@ final class NotchDropdownPanel: NSObject {
     ) {
         panelState = .showing
         visualEffectView.alphaValue = CGFloat(fromOpacity)
-        visualEffectView.layer?.opacity = fromOpacity
         visualEffectView.layer?.transform = translationTransform(y: fromTranslationY)
 
         NSAnimationContext.runAnimationGroup { context in
             context.duration = showAnimationDuration
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             visualEffectView.animator().alphaValue = 1
-            visualEffectView.layer?.animator().opacity = 1
             visualEffectView.layer?.animator().transform = CATransform3DIdentity
         } completionHandler: { [weak self] in
-            DispatchQueue.main.async {
-                guard let self, self.animationToken == token else { return }
-                self.panelState = .visible
-                snugLog(" NotchDropdownPanel: state → visible")
-            }
+            guard let self, self.animationToken == token else { return }
+            self.panelState = .visible
+            snugLog(" NotchDropdownPanel: state → visible")
         }
     }
 
@@ -340,20 +333,16 @@ final class NotchDropdownPanel: NSObject {
     ) {
         panelState = .hiding
         visualEffectView.alphaValue = CGFloat(fromOpacity)
-        visualEffectView.layer?.opacity = fromOpacity
         visualEffectView.layer?.transform = translationTransform(y: fromTranslationY)
 
         NSAnimationContext.runAnimationGroup { context in
             context.duration = hideAnimationDuration
             context.timingFunction = CAMediaTimingFunction(name: .easeIn)
             visualEffectView.animator().alphaValue = 0
-            visualEffectView.layer?.animator().opacity = 0
             visualEffectView.layer?.animator().transform = hiddenTransform
         } completionHandler: { [weak self] in
-            DispatchQueue.main.async {
-                guard let self, self.animationToken == token else { return }
-                self.completeHide()
-            }
+            guard let self, self.animationToken == token else { return }
+            self.completeHide()
         }
     }
 
@@ -361,7 +350,6 @@ final class NotchDropdownPanel: NSObject {
         panel.orderOut(nil)
         panelState = .hidden
         visualEffectView.alphaValue = 0
-        visualEffectView.layer?.opacity = 0
         visualEffectView.layer?.transform = hiddenTransform
         snugLog(" NotchDropdownPanel: state → hidden")
     }

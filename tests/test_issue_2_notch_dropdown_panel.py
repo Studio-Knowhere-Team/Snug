@@ -148,7 +148,7 @@ class NotchDropdownPanelIssueTests(unittest.TestCase):
         self.assertIn("let startingOpacity = currentOpacity(from: visualEffectView.layer?.presentation())", self.panel_text)
         self.assertIn("guard let self, self.animationToken == token else { return }", self.panel_text)
         self.assertIn("private func syncVisualStateFromPresentationLayer() {", self.panel_text)
-        self.assertIn("layer.opacity = presentation.opacity", self.panel_text)
+        self.assertIn("visualEffectView.alphaValue = CGFloat(presentation.opacity)", self.panel_text)
         self.assertIn("layer.transform = presentation.transform", self.panel_text)
         self.assertIn("visualEffectView.layer?.removeAllAnimations()", self.panel_text)
 
