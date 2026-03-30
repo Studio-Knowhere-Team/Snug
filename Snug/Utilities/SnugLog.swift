@@ -10,7 +10,10 @@ import Foundation
 /// Clear logs: `> /tmp/snug-debug.log`
 
 #if DEBUG
-private let logFileURL = URL(fileURLWithPath: "/tmp/snug-debug.log")
+private let logFileURL: URL = {
+    let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("snug-debug.log")
+    return url
+}()
 private let logQueue = DispatchQueue(label: "com.snug.log", qos: .utility)
 private let dateFormatter: DateFormatter = {
     let f = DateFormatter()
@@ -35,6 +38,9 @@ func snugLog(_ message: String, _ args: CVarArg...) {
                 }
             } else {
                 try? data.write(to: logFileURL)
+                // Restrict log file to owner-only (contains app names, PIDs, bundle IDs)
+                try? FileManager.default.setAttributes(
+                    [.posixPermissions: 0o600], ofItemAtPath: logFileURL.path)
             }
         }
     }

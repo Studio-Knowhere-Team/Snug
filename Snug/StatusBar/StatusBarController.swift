@@ -167,19 +167,18 @@ final class StatusBarController: NSObject {
 
     /// Left half-circle  (
     private static func makeSeparatorIcon() -> NSImage {
-        let image = NSImage(size: NSSize(width: 9, height: 18))
-        image.lockFocus()
-        NSColor.black.setStroke()
+        let image = NSImage(size: NSSize(width: 9, height: 18), flipped: false) { _ in
+            NSColor.black.setStroke()
 
-        let path = NSBezierPath()
-        path.lineWidth = iconLW
-        path.lineCapStyle = .round
-        path.appendArc(withCenter: NSPoint(x: 7, y: circleCY),
-                       radius: circleR,
-                       startAngle: 90, endAngle: 270)
-        path.stroke()
-
-        image.unlockFocus()
+            let path = NSBezierPath()
+            path.lineWidth = iconLW
+            path.lineCapStyle = .round
+            path.appendArc(withCenter: NSPoint(x: 7, y: circleCY),
+                           radius: circleR,
+                           startAngle: 90, endAngle: 270)
+            path.stroke()
+            return true
+        }
         image.isTemplate = true
         return image
     }
@@ -189,16 +188,15 @@ final class StatusBarController: NSObject {
         let d = circleR * 2
         let w = d + 4
         let cx = w / 2
-        let image = NSImage(size: NSSize(width: w, height: 18))
-        image.lockFocus()
-        NSColor.black.setStroke()
+        let image = NSImage(size: NSSize(width: w, height: 18), flipped: false) { _ in
+            NSColor.black.setStroke()
 
-        let path = NSBezierPath(ovalIn: NSRect(x: cx - circleR, y: circleCY - circleR,
-                                                width: d, height: d))
-        path.lineWidth = iconLW
-        path.stroke()
-
-        image.unlockFocus()
+            let path = NSBezierPath(ovalIn: NSRect(x: cx - circleR, y: circleCY - circleR,
+                                                    width: d, height: d))
+            path.lineWidth = iconLW
+            path.stroke()
+            return true
+        }
         image.isTemplate = true
         return image
     }
@@ -219,24 +217,22 @@ final class StatusBarController: NSObject {
             let filledCX = arcCX + gap + r           // filled circle center
             let w = filledCX + r + pad               // total image width
 
-            let image = NSImage(size: NSSize(width: w, height: h))
-            image.lockFocus()
+            let image = NSImage(size: NSSize(width: w, height: h), flipped: false) { _ in
+                // Left half-circle ( — matching radius
+                NSColor.black.setStroke()
+                let arc = NSBezierPath()
+                arc.lineWidth = iconLW
+                arc.lineCapStyle = .round
+                arc.appendArc(withCenter: NSPoint(x: arcCX, y: cy),
+                              radius: r, startAngle: 90, endAngle: 270)
+                arc.stroke()
 
-            // Left half-circle ( — matching radius
-            NSColor.black.setStroke()
-            let arc = NSBezierPath()
-            arc.lineWidth = iconLW
-            arc.lineCapStyle = .round
-            arc.appendArc(withCenter: NSPoint(x: arcCX, y: cy),
-                          radius: r, startAngle: 90, endAngle: 270)
-            arc.stroke()
-
-            // Filled circle
-            NSColor.black.setFill()
-            NSBezierPath(ovalIn: NSRect(x: filledCX - r, y: cy - r,
-                                        width: r * 2, height: r * 2)).fill()
-
-            image.unlockFocus()
+                // Filled circle
+                NSColor.black.setFill()
+                NSBezierPath(ovalIn: NSRect(x: filledCX - r, y: cy - r,
+                                            width: r * 2, height: r * 2)).fill()
+                return true
+            }
             image.isTemplate = true
             return image
         }
@@ -248,41 +244,39 @@ final class StatusBarController: NSObject {
         let filledCX = arcCX + gap + r               // filled circle center
         let w = filledCX + r + pad                   // total image width
 
-        let image = NSImage(size: NSSize(width: w, height: h))
-        image.lockFocus()
+        let image = NSImage(size: NSSize(width: w, height: h), flipped: false) { _ in
+            // Elliptical arc ( — tall & narrow, peeks from behind the circle
+            NSColor.black.setStroke()
+            let arc = NSBezierPath()
+            arc.appendArc(withCenter: .zero, radius: 1.0,
+                          startAngle: 90, endAngle: 270)
+            var xform = AffineTransform.identity
+            xform.translate(x: arcCX, y: cy)
+            xform.scale(x: arcHR, y: arcVR)
+            arc.transform(using: xform)
+            arc.lineWidth = iconLW
+            arc.lineCapStyle = .round
+            arc.stroke()
 
-        // Elliptical arc ( — tall & narrow, peeks from behind the circle
-        NSColor.black.setStroke()
-        let arc = NSBezierPath()
-        arc.appendArc(withCenter: .zero, radius: 1.0,
-                      startAngle: 90, endAngle: 270)
-        var xform = AffineTransform.identity
-        xform.translate(x: arcCX, y: cy)
-        xform.scale(x: arcHR, y: arcVR)
-        arc.transform(using: xform)
-        arc.lineWidth = iconLW
-        arc.lineCapStyle = .round
-        arc.stroke()
+            // Filled circle with count
+            NSColor.black.setFill()
+            NSBezierPath(ovalIn: NSRect(x: filledCX - r, y: cy - r,
+                                        width: r * 2, height: r * 2)).fill()
 
-        // Filled circle with count
-        NSColor.black.setFill()
-        NSBezierPath(ovalIn: NSRect(x: filledCX - r, y: cy - r,
-                                    width: r * 2, height: r * 2)).fill()
+            let text = count > 9 ? "9+" : "\(count)"
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .bold),
+                .foregroundColor: NSColor.black,
+            ]
+            let ts = text.size(withAttributes: attrs)
 
-        let text = count > 9 ? "9+" : "\(count)"
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .bold),
-            .foregroundColor: NSColor.black,
-        ]
-        let ts = text.size(withAttributes: attrs)
-
-        NSGraphicsContext.current?.compositingOperation = .clear
-        text.draw(at: NSPoint(x: filledCX - ts.width / 2,
-                              y: cy - ts.height / 2),
-                  withAttributes: attrs)
-        NSGraphicsContext.current?.compositingOperation = .sourceOver
-
-        image.unlockFocus()
+            NSGraphicsContext.current?.compositingOperation = .clear
+            text.draw(at: NSPoint(x: filledCX - ts.width / 2,
+                                  y: cy - ts.height / 2),
+                      withAttributes: attrs)
+            NSGraphicsContext.current?.compositingOperation = .sourceOver
+            return true
+        }
         image.isTemplate = true
         return image
     }
@@ -374,73 +368,12 @@ final class StatusBarController: NSObject {
     // MARK: - Smart Expansion
 
     /// Briefly go to natural width, capture item positions, then call completion.
-    private func discoverNaturalPositions(completion: @escaping () -> Void) {
-        separatorItem.length = NSStatusItem.variableLength
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-            guard let self else { return }
-
-            self.itemManager.refreshItems()
-
-            let hidden = self.itemsLeftOfSeparator()
-            self.cachedNaturalPositions = hidden
-                .map { (windowID: $0.windowID, naturalX: $0.frame.minX) }
-            self.cachedHiddenItems = hidden
-
-            snugLog(" discoverNaturalPositions: hidden=%d, hasNotch=%d, previous cachedHiddenItemInfo=%d",
-                  hidden.count, self.hasNotch ? 1 : 0, self.cachedHiddenItemInfo.count)
-            snugLog(" discoverNaturalPositions: previous items: %@",
-                  self.cachedHiddenItemInfo.map { $0.name }.joined(separator: ", "))
-
-            // Resolve names/icons for items visible at natural width.
-            let freshInfo = AccessibilityMenuBarHelper.resolveItems(for: hidden)
-
-            snugLog(" discoverNaturalPositions: AX resolved %d of %d: %@",
-                  freshInfo.count, hidden.count,
-                  freshInfo.map { $0.name }.joined(separator: ", "))
-
-            // Some items may be invisible at natural width (behind the notch, or
-            // macOS hides them from both CGWindowList and AX). These were discovered
-            // post-collapse and added to cachedHiddenItemInfo. Preserve those entries
-            // so the right-click menu stays complete.
-            // Use postCollapseItemCount as ground truth — it's from CGWindowList after
-            // collapse when ALL items are visible (pushed off-screen).
-            if self.postCollapseItemCount > freshInfo.count &&
-               self.cachedHiddenItemInfo.count > freshInfo.count {
-                let freshNames = Set(freshInfo.map { self.baseName(of: $0.name) })
-                let preserved = self.cachedHiddenItemInfo.filter {
-                    !freshNames.contains(self.baseName(of: $0.name))
-                }
-                self.cachedHiddenItemInfo = freshInfo + preserved
-                self.cachedHiddenItemInfo.sort { $0.name < $1.name }
-                snugLog(" discoverNaturalPositions: PRESERVED %d items (fresh=%d, postCollapse=%d, total=%d): %@",
-                      preserved.count, freshInfo.count, self.postCollapseItemCount,
-                      self.cachedHiddenItemInfo.count,
-                      self.cachedHiddenItemInfo.map { $0.name }.joined(separator: ", "))
-            } else {
-                self.cachedHiddenItemInfo = freshInfo
-                snugLog(" discoverNaturalPositions: NO preserve (postCollapse=%d, old=%d, fresh=%d)",
-                      self.postCollapseItemCount, self.cachedHiddenItemInfo.count, freshInfo.count)
-            }
-
-            completion()
-        }
-    }
-
     /// Strip " (N)" suffix from display name for comparison.
     private func baseName(of displayName: String) -> String {
         if let range = displayName.range(of: #" \(\d+\)$"#, options: .regularExpression) {
             return String(displayName[..<range.lowerBound])
         }
         return displayName
-    }
-
-    private func applySmartExpansion() {
-        isCollapsed = false
-        updateToggleIcon()
-
-        separatorItem.length = NSStatusItem.variableLength
-        autoCollapseIfNeeded()
     }
 
     // MARK: - Toggle Icon
@@ -619,28 +552,19 @@ final class StatusBarController: NSObject {
             // Skip Control Centre — it hosts third-party items on modern macOS,
             // so grouping by its name is meaningless.
             guard name != "Control Centre" && name != "Control Center" else { continue }
-            // Skip system widgets (same list as AccessibilityMenuBarHelper.resolveElement).
-            let systemWidgets: Set<String> = ["Audio and Video Controls", "Now Playing", "Focus"]
-            guard !systemWidgets.contains(name) else { continue }
+            // Skip system widgets
+            guard !AccessibilityMenuBarHelper.systemWidgetNames.contains(name) else { continue }
 
             counts[name, default: 0] += 1
             if seen[name] == nil {
-                let icon: NSImage? = {
-                    guard let appIcon = app?.icon else { return nil }
-                    let size = NSSize(width: 16, height: 16)
-                    let scaled = NSImage(size: size)
-                    scaled.lockFocus()
-                    appIcon.draw(in: NSRect(origin: .zero, size: size))
-                    scaled.unlockFocus()
-                    return scaled
-                }()
+                let icon = app?.icon?.scaled(to: NSSize(width: 16, height: 16))
                 seen[name] = (icon: icon, frame: item.frame, windowID: item.windowID, ownerPID: item.ownerPID)
             }
         }
 
-        return counts.sorted(by: { $0.key < $1.key }).map { name, count in
+        return counts.sorted(by: { $0.key < $1.key }).compactMap { name, count in
+            guard let data = seen[name] else { return nil }
             let displayName = count > 1 ? "\(name) (\(count))" : name
-            let data = seen[name]!
             return HiddenItemInfo(name: displayName, icon: data.icon, frame: data.frame, windowID: data.windowID, ownerPID: data.ownerPID)
         }
     }
@@ -660,12 +584,14 @@ final class StatusBarController: NSObject {
         // Reveal items instantly.
         separatorItem.length = NSStatusItem.variableLength
 
+        // Always reset synchronously — don't gate on the async callback.
+        isToggling = false
+
         // Refresh caches after items have settled.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
             guard let self else { return }
             self.refreshHiddenItemCache()
             self.autoCollapseIfNeeded()
-            self.isToggling = false
         }
     }
 
@@ -691,13 +617,6 @@ final class StatusBarController: NSObject {
         }
         snugLog(" refreshHiddenItemCache: hidden=%d, resolved=%d",
               hidden.count, cachedHiddenItemInfo.count)
-    }
-
-    private func forceFullExpand() {
-        separatorItem.length = NSStatusItem.variableLength
-        isCollapsed = false
-        updateToggleIcon()
-        autoCollapseIfNeeded()
     }
 
     // MARK: - Auto-Collapse Timer
@@ -880,16 +799,6 @@ final class StatusBarController: NSObject {
 
     @objc private func openPreferences() {
         SettingsOpener.open()
-    }
-
-    @objc private func toggleAutoCollapse() {
-        preferences.isAutoHide.toggle()
-        if preferences.isAutoHide {
-            autoCollapseIfNeeded()
-        } else {
-            autoHideTimer?.invalidate()
-            autoHideTimer = nil
-        }
     }
 
     // MARK: - Preference Change Handlers

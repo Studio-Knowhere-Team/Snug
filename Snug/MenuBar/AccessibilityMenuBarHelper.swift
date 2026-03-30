@@ -21,6 +21,13 @@ struct HiddenItemInfo: Sendable {
 @MainActor
 enum AccessibilityMenuBarHelper {
 
+    /// System widget names to filter out — these are macOS system items, not third-party extras.
+    static let systemWidgetNames: Set<String> = [
+        "Audio and Video Controls",
+        "Now Playing",
+        "Focus",
+    ]
+
     /// Whether Accessibility permission has been granted (non-blocking check).
     static var isGranted: Bool {
         AXIsProcessTrusted()
@@ -99,9 +106,12 @@ enum AccessibilityMenuBarHelper {
             return nil
         }
 
+        // swiftlint:disable:next force_cast — CF type bridging always succeeds
+        let bar = extrasBar as! AXUIElement
+
         var childrenValue: AnyObject?
         AXUIElementCopyAttributeValue(
-            extrasBar as! AXUIElement, kAXChildrenAttribute as CFString, &childrenValue
+            bar, kAXChildrenAttribute as CFString, &childrenValue
         )
         guard let children = childrenValue as? [AXUIElement], !children.isEmpty else {
             snugLog("findExtraByPID: pid %d AXExtrasMenuBar has no children", targetPID)
@@ -160,9 +170,9 @@ enum AccessibilityMenuBarHelper {
             }
         }
 
-        return counts.sorted(by: { $0.key < $1.key }).map { name, count in
+        return counts.sorted(by: { $0.key < $1.key }).compactMap { name, count in
+            guard let data = seen[name] else { return nil }
             let displayName = count > 1 ? "\(name) (\(count))" : name
-            let data = seen[name]!
             return HiddenItemInfo(name: displayName, icon: data.icon, frame: data.frame, windowID: data.windowID, ownerPID: data.ownerPID)
         }
     }
@@ -206,9 +216,9 @@ enum AccessibilityMenuBarHelper {
             }
         }
 
-        return counts.sorted(by: { $0.key < $1.key }).map { name, count in
+        return counts.sorted(by: { $0.key < $1.key }).compactMap { name, count in
+            guard let data = seen[name] else { return nil }
             let displayName = count > 1 ? "\(name) (\(count))" : name
-            let data = seen[name]!
             return HiddenItemInfo(name: displayName, icon: data.icon, frame: data.frame, windowID: 0, ownerPID: data.ownerPID)
         }
     }
@@ -232,22 +242,25 @@ enum AccessibilityMenuBarHelper {
             add(front.processIdentifier)
         }
 
+        // Snapshot running apps once to avoid repeated enumeration
+        let runningApps = NSWorkspace.shared.runningApplications
+
         // Finder (always running)
-        if let finder = NSWorkspace.shared.runningApplications.first(where: {
+        if let finder = runningApps.first(where: {
             $0.bundleIdentifier == "com.apple.finder"
         }) {
             add(finder.processIdentifier)
         }
 
         // Control Center (hosts third-party extras on modern macOS)
-        if let cc = NSWorkspace.shared.runningApplications.first(where: {
+        if let cc = runningApps.first(where: {
             $0.bundleIdentifier == "com.apple.controlcenter"
         }) {
             add(cc.processIdentifier)
         }
 
         // SystemUIServer (hosts extras on older macOS)
-        if let suis = NSWorkspace.shared.runningApplications.first(where: {
+        if let suis = runningApps.first(where: {
             $0.bundleIdentifier == "com.apple.systemuiserver"
         }) {
             add(suis.processIdentifier)
@@ -279,9 +292,11 @@ enum AccessibilityMenuBarHelper {
                 continue
             }
 
+            // swiftlint:disable:next force_cast — CF type bridging always succeeds
+            let bar = extrasBar as! AXUIElement
             var childrenValue: AnyObject?
             let childResult = AXUIElementCopyAttributeValue(
-                extrasBar as! AXUIElement, kAXChildrenAttribute as CFString, &childrenValue
+                bar, kAXChildrenAttribute as CFString, &childrenValue
             )
             if let children = childrenValue as? [AXUIElement], !children.isEmpty {
                 snugLog("  pid %d: found %d children%@", pid, children.count,
@@ -362,25 +377,12 @@ enum AccessibilityMenuBarHelper {
         }
 
         // Skip system control widgets that aren't real third-party status items.
-        let systemWidgets: Set<String> = [
-            "Audio and Video Controls",
-            "Now Playing",
-            "Focus",
-        ]
-        if systemWidgets.contains(name) {
+        if systemWidgetNames.contains(name) {
             snugLog("resolveElement: skipping system widget '%@'", name)
             return nil
         }
 
-        let icon: NSImage? = {
-            guard let appIcon = app?.icon else { return nil }
-            let size = NSSize(width: 16, height: 16)
-            let scaled = NSImage(size: size)
-            scaled.lockFocus()
-            appIcon.draw(in: NSRect(origin: .zero, size: size))
-            scaled.unlockFocus()
-            return scaled
-        }()
+        let icon: NSImage? = app?.icon?.scaled(to: NSSize(width: 16, height: 16))
 
         return HiddenItemInfo(name: name, icon: icon, frame: frame, windowID: windowID, ownerPID: pid)
     }
@@ -395,6 +397,7 @@ enum AccessibilityMenuBarHelper {
         var pos = CGPoint.zero
         var size = CGSize.zero
         if let pv = posValue {
+            // CF type bridging — AXValue cast always succeeds
             AXValueGetValue(pv as! AXValue, .cgPoint, &pos)
         }
         if let sv = sizeValue {
@@ -418,7 +421,12 @@ enum AccessibilityMenuBarHelper {
         let savedPos = CGEvent(source: nil)?.location ?? CGPoint(x: sourceX, y: y)
 
         // Hide cursor so the drag is invisible to the user.
+        // defer ensures cursor is always restored, even if CGEvent creation fails mid-sequence.
         CGDisplayHideCursor(CGMainDisplayID())
+        defer {
+            CGWarpMouseCursorPosition(savedPos)
+            CGDisplayShowCursor(CGMainDisplayID())
+        }
 
         let cmdFlag = CGEventFlags.maskCommand
 
@@ -429,7 +437,6 @@ enum AccessibilityMenuBarHelper {
             mouseCursorPosition: CGPoint(x: sourceX, y: y),
             mouseButton: .left
         ) else {
-            CGDisplayShowCursor(CGMainDisplayID())
             return false
         }
         mouseDown.flags = cmdFlag
@@ -478,10 +485,8 @@ enum AccessibilityMenuBarHelper {
             mouseUp.post(tap: .cghidEventTap)
         }
 
-        // 5. Restore cursor position and show it again.
         usleep(5_000)
-        CGWarpMouseCursorPosition(savedPos)
-        CGDisplayShowCursor(CGMainDisplayID())
+        // Cursor restored by defer block above.
 
         snugLog("moveItem: dragged from x=%.0f to x=%.0f (y=%.0f)", sourceX, targetX, y)
         return true

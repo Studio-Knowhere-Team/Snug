@@ -1,8 +1,11 @@
 import Foundation
 
+/// Raw values skip 2 (previously used by a removed 15-second option).
+/// Existing UserDefaults are preserved since raw values didn't change.
 enum AutoHideInterval: Int, CaseIterable, Sendable {
     case fiveSeconds = 0
     case tenSeconds = 1
+    // raw value 2 was fifteenSeconds (removed)
     case thirtySeconds = 3
     case oneMinute = 4
 

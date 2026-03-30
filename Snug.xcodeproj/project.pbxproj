@@ -13,14 +13,12 @@
 		5CACB396F0C6E350899F8C3D /* AboutSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B16A60D20C7860D6BE5D217E /* AboutSettingsView.swift */; };
 		657E4CD065CFBF112C307BDF /* AppPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0639215592A6BE0FD5565AB1 /* AppPreferences.swift */; };
 		78BC78A073A764ECB7E2C81D /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46908B2CCF2C07AE5838D9B5 /* AppDelegate.swift */; };
-		8055282F4BE04FF171AE1D9D /* GlobalKeybindPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EB693FA38BB6627653A3A7D /* GlobalKeybindPreferences.swift */; };
 		8213856905D700FF0D392DE1 /* SettingsOpener.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAA7E955C5A328B2FDDC49FB /* SettingsOpener.swift */; };
 		855417720748B23D246C9489 /* GeneralSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B58BCEB29C886C6348648394 /* GeneralSettingsView.swift */; };
 		8C4D8C13CE295D7BF5586665 /* AutoHideInterval.swift in Sources */ = {isa = PBXBuildFile; fileRef = C43FECE55F521C25AC722CC4 /* AutoHideInterval.swift */; };
-		921CA10A2FCA6C7AB290101C /* HotKey in Frameworks */ = {isa = PBXBuildFile; productRef = 947179A7E2AB6162AE6DD25D /* HotKey */; };
 		9A44B304E20331012A16B2EC /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1E6AA399350F76E111E241D1 /* Assets.xcassets */; };
 		A18E180EA3E4114AE1CE4E12 /* MenuBarItemManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7066230EEF5D01B9DEDDA713 /* MenuBarItemManager.swift */; };
-		AA7EEAF2A2668EC6ED359011 /* Permissions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5881D56DD1347D02C7E2F2B0 /* Permissions.swift */; };
+		B1C2D3E4F5A6B7C8D9E0F1A2 /* NSImage+Scaled.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2D3E4F5A6B7C8D9E0F1A2B3 /* NSImage+Scaled.swift */; };
 		C93E26DFA31E755B979045B7 /* StatusBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9986A02C6BEFFD28D3AC4339 /* StatusBarController.swift */; };
 		D1E2F3A4B5C6D7E8F9A0B1C2 /* SnugLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6A7B8C9D0E1F2 /* SnugLog.swift */; };
 		E479E0EC25D8C62C8EBA9B73 /* MenuBarItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12064846ABB8A64F1DD311AC /* MenuBarItem.swift */; };
@@ -35,9 +33,7 @@
 		0639215592A6BE0FD5565AB1 /* AppPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPreferences.swift; sourceTree = "<group>"; };
 		12064846ABB8A64F1DD311AC /* MenuBarItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarItem.swift; sourceTree = "<group>"; };
 		1E6AA399350F76E111E241D1 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		2EB693FA38BB6627653A3A7D /* GlobalKeybindPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalKeybindPreferences.swift; sourceTree = "<group>"; };
 		46908B2CCF2C07AE5838D9B5 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
-		5881D56DD1347D02C7E2F2B0 /* Permissions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Permissions.swift; sourceTree = "<group>"; };
 		645E59665B30A605B041B102 /* Snug.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Snug.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		6A9D15D8F91284EA00F2E122 /* SnugApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnugApp.swift; sourceTree = "<group>"; };
 		7066230EEF5D01B9DEDDA713 /* MenuBarItemManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarItemManager.swift; sourceTree = "<group>"; };
@@ -47,6 +43,7 @@
 		AAA7E955C5A328B2FDDC49FB /* SettingsOpener.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsOpener.swift; sourceTree = "<group>"; };
 		B16A60D20C7860D6BE5D217E /* AboutSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AboutSettingsView.swift; sourceTree = "<group>"; };
 		B58BCEB29C886C6348648394 /* GeneralSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeneralSettingsView.swift; sourceTree = "<group>"; };
+		C2D3E4F5A6B7C8D9E0F1A2B3 /* NSImage+Scaled.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NSImage+Scaled.swift"; sourceTree = "<group>"; };
 		C43FECE55F521C25AC722CC4 /* AutoHideInterval.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutoHideInterval.swift; sourceTree = "<group>"; };
 		E2F3A4B5C6D7E8F9A0B1C2D3 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		E32EC3280B7B9D6F7A5863DF /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -60,7 +57,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				921CA10A2FCA6C7AB290101C /* HotKey in Frameworks */,
 				FDA27FE22F75924C00E31049 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -100,7 +96,6 @@
 			isa = PBXGroup;
 			children = (
 				C43FECE55F521C25AC722CC4 /* AutoHideInterval.swift */,
-				2EB693FA38BB6627653A3A7D /* GlobalKeybindPreferences.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -116,7 +111,6 @@
 		71780EC123FAB955B6EE6D80 /* Utilities */ = {
 			isa = PBXGroup;
 			children = (
-				5881D56DD1347D02C7E2F2B0 /* Permissions.swift */,
 				AAA7E955C5A328B2FDDC49FB /* SettingsOpener.swift */,
 				A1B2C3D4E5F6A7B8C9D0E1F2 /* SnugLog.swift */,
 				FDA27FDE2F7590F300E31049 /* UpdaterController.swift */,
@@ -135,12 +129,12 @@
 		93C988B8E83BA231863E3720 = {
 			isa = PBXGroup;
 			children = (
-				9F44A3188691540ECC0985C0 /* CompressBar */,
+				9F44A3188691540ECC0985C0 /* Snug */,
 				0384D647649DE920C2D2DAD5 /* Products */,
 			);
 			sourceTree = "<group>";
 		};
-		9F44A3188691540ECC0985C0 /* CompressBar */ = {
+		9F44A3188691540ECC0985C0 /* Snug */ = {
 			isa = PBXGroup;
 			children = (
 				46908B2CCF2C07AE5838D9B5 /* AppDelegate.swift */,
@@ -156,7 +150,7 @@
 				3F5402CDDB45F45B646BBA1B /* StatusBar */,
 				71780EC123FAB955B6EE6D80 /* Utilities */,
 			);
-			path = CompressBar;
+			path = Snug;
 			sourceTree = "<group>";
 		};
 		D4B5C6D7E8F9A0B1C2D3E4F5 /* Onboarding */ = {
@@ -172,6 +166,7 @@
 			isa = PBXGroup;
 			children = (
 				A44E3CEAFCDE83742468D6BF /* Bundle+Version.swift */,
+				C2D3E4F5A6B7C8D9E0F1A2B3 /* NSImage+Scaled.swift */,
 			);
 			path = Extensions;
 			sourceTree = "<group>";
@@ -193,7 +188,6 @@
 			);
 			name = Snug;
 			packageProductDependencies = (
-				947179A7E2AB6162AE6DD25D /* HotKey */,
 				FDA27FE12F75924C00E31049 /* Sparkle */,
 			);
 			productName = Snug;
@@ -209,7 +203,7 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1600;
 			};
-			buildConfigurationList = 9A9E44C2FE5F813D920F1359 /* Build configuration list for PBXProject "CompressBar" */;
+			buildConfigurationList = 9A9E44C2FE5F813D920F1359 /* Build configuration list for PBXProject "Snug" */;
 			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
@@ -220,7 +214,6 @@
 			mainGroup = 93C988B8E83BA231863E3720;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				9527A4063715DB64EC4C1826 /* XCRemoteSwiftPackageReference "HotKey" */,
 				FDA27FE02F75924C00E31049 /* XCRemoteSwiftPackageReference "Sparkle" */,
 			);
 			projectDirPath = "";
@@ -253,13 +246,12 @@
 				657E4CD065CFBF112C307BDF /* AppPreferences.swift in Sources */,
 				8C4D8C13CE295D7BF5586665 /* AutoHideInterval.swift in Sources */,
 				06D9732D5D4E6C606B3D405D /* Bundle+Version.swift in Sources */,
+				B1C2D3E4F5A6B7C8D9E0F1A2 /* NSImage+Scaled.swift in Sources */,
 				407BB81722DE59A01540DC91 /* SnugApp.swift in Sources */,
 				855417720748B23D246C9489 /* GeneralSettingsView.swift in Sources */,
-				8055282F4BE04FF171AE1D9D /* GlobalKeybindPreferences.swift in Sources */,
 				FDA27FDF2F7590F300E31049 /* UpdaterController.swift in Sources */,
 				E479E0EC25D8C62C8EBA9B73 /* MenuBarItem.swift in Sources */,
 				A18E180EA3E4114AE1CE4E12 /* MenuBarItemManager.swift in Sources */,
-				AA7EEAF2A2668EC6ED359011 /* Permissions.swift in Sources */,
 				8213856905D700FF0D392DE1 /* SettingsOpener.swift in Sources */,
 				C93E26DFA31E755B979045B7 /* StatusBarController.swift in Sources */,
 				D1E2F3A4B5C6D7E8F9A0B1C2 /* SnugLog.swift in Sources */,
@@ -275,14 +267,16 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = CompressBar/Snug.entitlements;
-				CODE_SIGN_IDENTITY = "Apple Development";
-				CODE_SIGN_STYLE = Automatic;
+				CODE_SIGN_ENTITLEMENTS = Snug/Snug.entitlements;
+				CODE_SIGN_IDENTITY = "Developer ID Application";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Developer ID Application";
+				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 5654UXUA3M;
+				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = CompressBar/Info.plist;
+				INFOPLIST_FILE = Snug/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Snug;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -290,7 +284,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 1.0.0;
+				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "Studio-Knowhere.Snug";
 				PRODUCT_NAME = Snug;
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -423,14 +417,14 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = CompressBar/Snug.entitlements;
+				CODE_SIGN_ENTITLEMENTS = Snug/Snug.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 5654UXUA3M;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = CompressBar/Info.plist;
+				INFOPLIST_FILE = Snug/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Snug;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -438,7 +432,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 1.0.0;
+				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "Studio-Knowhere.Snug";
 				PRODUCT_NAME = Snug;
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -460,7 +454,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
-		9A9E44C2FE5F813D920F1359 /* Build configuration list for PBXProject "CompressBar" */ = {
+		9A9E44C2FE5F813D920F1359 /* Build configuration list for PBXProject "Snug" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				A2649EB7FAABDBE950F52A9A /* Debug */,
@@ -472,14 +466,6 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		9527A4063715DB64EC4C1826 /* XCRemoteSwiftPackageReference "HotKey" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/soffes/HotKey";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 0.2.1;
-			};
-		};
 		FDA27FE02F75924C00E31049 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/sparkle-project/Sparkle";
@@ -491,11 +477,6 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		947179A7E2AB6162AE6DD25D /* HotKey */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 9527A4063715DB64EC4C1826 /* XCRemoteSwiftPackageReference "HotKey" */;
-			productName = HotKey;
-		};
 		FDA27FE12F75924C00E31049 /* Sparkle */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = FDA27FE02F75924C00E31049 /* XCRemoteSwiftPackageReference "Sparkle" */;

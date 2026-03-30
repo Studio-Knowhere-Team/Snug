@@ -17,9 +17,8 @@ struct AboutSettingsView: View {
             Text("Snug")
                 .font(.title2.bold())
 
-            if let version = Bundle.main.releaseVersionNumber,
-               let build = Bundle.main.buildVersionNumber {
-                Text("Version \(version) (\(build))")
+            if let version = Bundle.main.releaseVersionNumber {
+                Text("Version \(version)")
                     .foregroundStyle(.secondary)
             }
 
@@ -32,6 +31,18 @@ struct AboutSettingsView: View {
                 updaterController.checkForUpdates()
             }
             .disabled(!updaterController.canCheckForUpdates)
+
+            #if DEBUG
+            Divider()
+                .frame(width: 120)
+
+            Button("Reset Onboarding") {
+                AppPreferences.shared.hasCompletedOnboarding = false
+                OnboardingWindow.show()
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            #endif
 
             Spacer()
         }

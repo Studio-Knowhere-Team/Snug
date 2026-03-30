@@ -15,6 +15,10 @@ xcschememanagement.plist
 dmg_resources/
 dmg_staging/
 
+# Xcode export artifacts
+Snug *.app
+Snug 20*/
+
 # Claude Code
 .claude/
 

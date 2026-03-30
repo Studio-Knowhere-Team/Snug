@@ -4,7 +4,6 @@ import AppKit
 /// No special permissions required — basic window metadata (position, size, PID)
 /// is available without Screen Recording.
 @MainActor
-@Observable
 final class MenuBarItemManager {
     private(set) var items: [MenuBarItem] = []
 
@@ -14,7 +13,7 @@ final class MenuBarItemManager {
     var ownWindowIDs: Set<CGWindowID> = []
 
     private let myBundleID = Bundle.main.bundleIdentifier ?? ""
-    @ObservationIgnored private var refreshTimer: Timer?
+    private var refreshTimer: Timer?
 
     /// Cache of PID → bundle identifier
     private var bundleIDCache: [pid_t: String] = [:]
@@ -102,9 +101,21 @@ final class MenuBarItemManager {
     // MARK: - Periodic Refresh
 
     private func startPeriodicRefresh() {
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.refreshItems()
+            }
+        }
+        // Allow macOS to coalesce timer wakeups for App Nap eligibility.
+        refreshTimer?.tolerance = 2.0
+
+        // Clear stale PID cache when screen configuration changes.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.bundleIDCache.removeAll(keepingCapacity: true)
             }
         }
     }

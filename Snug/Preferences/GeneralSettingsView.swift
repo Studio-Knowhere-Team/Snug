@@ -53,7 +53,7 @@ struct GeneralSettingsView: View {
                     }
 
                     Label {
-                        Text("Click the icon to toggle \u{2014} the circle splits open or closes shut.")
+                        Text("Click the icon to toggle and the circle splits open or closes shut.")
                     } icon: {
                         Image(systemName: "circle.lefthalf.filled")
                             .foregroundStyle(.secondary)
@@ -132,6 +132,7 @@ struct GeneralSettingsView: View {
                 try SMAppService.mainApp.unregister()
             }
         } catch {
+            snugLog("toggleLaunchAtLogin failed: %@", error.localizedDescription)
             launchAtLogin = SMAppService.mainApp.status == .enabled
         }
     }
