@@ -41,8 +41,10 @@ final class NotchDropdownPanel: NSObject {
     private let gridSpacing: CGFloat = 8
     private let maxVisibleRows = 3
     private let maxScrollHeight: CGFloat = 160
-    private let animationDuration: CFTimeInterval = 0.18
     private let cornerRadius: CGFloat = 12
+    private let showAnimationDuration: TimeInterval = 0.2
+    private let hideAnimationDuration: TimeInterval = 0.15
+    private let hiddenYOffset: CGFloat = -4
 
     // MARK: - Init
 
@@ -76,7 +78,7 @@ final class NotchDropdownPanel: NSObject {
         let targetFrame = frame(forContentSize: contentSize(), below: notchRect)
 
         let token = prepareForAnimation()
-        let startingScale = currentScale(from: visualEffectView.layer?.presentation()) ?? currentScale(from: visualEffectView.layer) ?? 0.96
+        let startingTranslationY = currentTranslationY(from: visualEffectView.layer?.presentation()) ?? currentTranslationY(from: visualEffectView.layer) ?? hiddenYOffset
         let startingOpacity = currentOpacity(from: visualEffectView.layer?.presentation()) ?? currentOpacity(from: visualEffectView.layer) ?? 0
 
         panel.setContentSize(targetFrame.size)
@@ -84,19 +86,16 @@ final class NotchDropdownPanel: NSObject {
         panel.orderFront(nil)
         panel.alphaValue = 1
 
-        animate(
-            state: .showing,
-            fromOpacity: startingOpacity,
-            toOpacity: 1,
-            fromScale: startingScale,
-            toScale: 1
-        ) { [weak self] in
-            DispatchQueue.main.async {
-                guard let self, self.animationToken == token else { return }
-                self.panelState = .visible
-                snugLog(" NotchDropdownPanel: state → visible")
-            }
+        if !shouldAnimateTransitions {
+            panelState = .visible
+            visualEffectView.alphaValue = 1
+            visualEffectView.layer?.opacity = 1
+            visualEffectView.layer?.transform = CATransform3DIdentity
+            snugLog(" NotchDropdownPanel: state → visible")
+            return
         }
+
+        animateShow(token: token, fromOpacity: startingOpacity, fromTranslationY: startingTranslationY)
     }
 
     func hide(animated: Bool) {
@@ -105,27 +104,16 @@ final class NotchDropdownPanel: NSObject {
         snugLog(" NotchDropdownPanel.hide: animated=%d, state=%@",
               animated ? 1 : 0, "\(panelState)")
 
-        if !animated {
+        if !animated || !shouldAnimateTransitions {
             completeHide()
             return
         }
 
         let token = prepareForAnimation()
-        let startingScale = currentScale(from: visualEffectView.layer?.presentation()) ?? currentScale(from: visualEffectView.layer) ?? 1
         let startingOpacity = currentOpacity(from: visualEffectView.layer?.presentation()) ?? currentOpacity(from: visualEffectView.layer) ?? 1
+        let startingTranslationY = currentTranslationY(from: visualEffectView.layer?.presentation()) ?? currentTranslationY(from: visualEffectView.layer) ?? 0
 
-        animate(
-            state: .hiding,
-            fromOpacity: startingOpacity,
-            toOpacity: 0,
-            fromScale: startingScale,
-            toScale: 0.96
-        ) { [weak self] in
-            DispatchQueue.main.async {
-                guard let self, self.animationToken == token else { return }
-                self.completeHide()
-            }
-        }
+        animateHide(token: token, fromOpacity: startingOpacity, fromTranslationY: startingTranslationY)
     }
 
     // MARK: - Panel Setup
@@ -150,8 +138,9 @@ final class NotchDropdownPanel: NSObject {
         visualEffectView.state = .active
         visualEffectView.wantsLayer = true
         visualEffectView.autoresizingMask = [.width, .height]
+        visualEffectView.alphaValue = 0
         visualEffectView.layer?.opacity = 0
-        visualEffectView.layer?.transform = CATransform3DMakeScale(0.96, 0.96, 1)
+        visualEffectView.layer?.transform = hiddenTransform
 
         scrollView.drawsBackground = false
         scrollView.borderType = .noBorder
@@ -316,52 +305,64 @@ final class NotchDropdownPanel: NSObject {
               let layer = visualEffectView.layer else { return }
         layer.opacity = presentation.opacity
         layer.transform = presentation.transform
+        visualEffectView.alphaValue = CGFloat(presentation.opacity)
     }
 
-    private func animate(
-        state: PanelState,
+    private func animateShow(
+        token: UUID,
         fromOpacity: Float,
-        toOpacity: Float,
-        fromScale: CGFloat,
-        toScale: CGFloat,
-        completion: @escaping () -> Void
+        fromTranslationY: CGFloat
     ) {
-        panelState = state
+        panelState = .showing
+        visualEffectView.alphaValue = CGFloat(fromOpacity)
+        visualEffectView.layer?.opacity = fromOpacity
+        visualEffectView.layer?.transform = translationTransform(y: fromTranslationY)
 
-        guard let layer = visualEffectView.layer else {
-            completion()
-            return
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = showAnimationDuration
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            visualEffectView.animator().alphaValue = 1
+            visualEffectView.layer?.animator().opacity = 1
+            visualEffectView.layer?.animator().transform = CATransform3DIdentity
+        } completionHandler: { [weak self] in
+            DispatchQueue.main.async {
+                guard let self, self.animationToken == token else { return }
+                self.panelState = .visible
+                snugLog(" NotchDropdownPanel: state → visible")
+            }
         }
+    }
 
-        layer.opacity = fromOpacity
-        layer.transform = CATransform3DMakeScale(fromScale, fromScale, 1)
+    private func animateHide(
+        token: UUID,
+        fromOpacity: Float,
+        fromTranslationY: CGFloat
+    ) {
+        panelState = .hiding
+        visualEffectView.alphaValue = CGFloat(fromOpacity)
+        visualEffectView.layer?.opacity = fromOpacity
+        visualEffectView.layer?.transform = translationTransform(y: fromTranslationY)
 
-        let opacityAnimation = CABasicAnimation(keyPath: "opacity")
-        opacityAnimation.fromValue = fromOpacity
-        opacityAnimation.toValue = toOpacity
-        opacityAnimation.duration = animationDuration
-        opacityAnimation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-
-        let scaleAnimation = CABasicAnimation(keyPath: "transform")
-        scaleAnimation.fromValue = CATransform3DMakeScale(fromScale, fromScale, 1)
-        scaleAnimation.toValue = CATransform3DMakeScale(toScale, toScale, 1)
-        scaleAnimation.duration = animationDuration
-        scaleAnimation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-
-        CATransaction.begin()
-        CATransaction.setCompletionBlock(completion)
-        layer.opacity = toOpacity
-        layer.transform = CATransform3DMakeScale(toScale, toScale, 1)
-        layer.add(opacityAnimation, forKey: "opacity")
-        layer.add(scaleAnimation, forKey: "transform")
-        CATransaction.commit()
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = hideAnimationDuration
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            visualEffectView.animator().alphaValue = 0
+            visualEffectView.layer?.animator().opacity = 0
+            visualEffectView.layer?.animator().transform = hiddenTransform
+        } completionHandler: { [weak self] in
+            DispatchQueue.main.async {
+                guard let self, self.animationToken == token else { return }
+                self.completeHide()
+            }
+        }
     }
 
     private func completeHide() {
         panel.orderOut(nil)
         panelState = .hidden
+        visualEffectView.alphaValue = 0
         visualEffectView.layer?.opacity = 0
-        visualEffectView.layer?.transform = CATransform3DMakeScale(0.96, 0.96, 1)
+        visualEffectView.layer?.transform = hiddenTransform
         snugLog(" NotchDropdownPanel: state → hidden")
     }
 
@@ -369,9 +370,21 @@ final class NotchDropdownPanel: NSObject {
         layer?.opacity
     }
 
-    private func currentScale(from layer: CALayer?) -> CGFloat? {
+    private func currentTranslationY(from layer: CALayer?) -> CGFloat? {
         guard let transform = layer?.transform else { return nil }
-        return CGFloat(transform.m11)
+        return CGFloat(transform.m42)
+    }
+
+    private var shouldAnimateTransitions: Bool {
+        !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    }
+
+    private var hiddenTransform: CATransform3D {
+        translationTransform(y: hiddenYOffset)
+    }
+
+    private func translationTransform(y: CGFloat) -> CATransform3D {
+        CATransform3DMakeTranslation(0, y, 0)
     }
 
     // MARK: - Actions

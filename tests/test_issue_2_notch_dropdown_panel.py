@@ -144,7 +144,7 @@ class NotchDropdownPanelIssueTests(unittest.TestCase):
     def test_animation_interruption_uses_presentation_layer_and_tokens_to_prevent_overlap(self) -> None:
         self.assertIn("private var animationToken = UUID()", self.panel_text)
         self.assertIn("let token = prepareForAnimation()", self.panel_text)
-        self.assertIn("let startingScale = currentScale(from: visualEffectView.layer?.presentation())", self.panel_text)
+        self.assertIn("let startingTranslationY = currentTranslationY(from: visualEffectView.layer?.presentation())", self.panel_text)
         self.assertIn("let startingOpacity = currentOpacity(from: visualEffectView.layer?.presentation())", self.panel_text)
         self.assertIn("guard let self, self.animationToken == token else { return }", self.panel_text)
         self.assertIn("private func syncVisualStateFromPresentationLayer() {", self.panel_text)
@@ -153,13 +153,27 @@ class NotchDropdownPanelIssueTests(unittest.TestCase):
         self.assertIn("visualEffectView.layer?.removeAllAnimations()", self.panel_text)
 
     def test_show_and_hide_animate_between_required_panel_states(self) -> None:
-        self.assertIn("animate(", self.panel_text)
-        self.assertIn("state: .showing", self.panel_text)
-        self.assertIn("state: .hiding", self.panel_text)
+        self.assertIn("private func animateShow(", self.panel_text)
+        self.assertIn("private func animateHide(", self.panel_text)
+        self.assertIn("panelState = .showing", self.panel_text)
+        self.assertIn("panelState = .hiding", self.panel_text)
         self.assertIn("self.panelState = .visible", self.panel_text)
-        self.assertIn("panelState = state", self.panel_text)
         self.assertIn("panelState = .hidden", self.panel_text)
         self.assertIn("panel.orderOut(nil)", self.panel_text)
+
+    def test_issue_3_uses_required_animation_context_translate_and_reduce_motion_support(self) -> None:
+        self.assertIn("private let showAnimationDuration: TimeInterval = 0.2", self.panel_text)
+        self.assertIn("private let hideAnimationDuration: TimeInterval = 0.15", self.panel_text)
+        self.assertIn("private let hiddenYOffset: CGFloat = -4", self.panel_text)
+        self.assertIn("NSAnimationContext.runAnimationGroup { context in", self.panel_text)
+        self.assertIn("context.timingFunction = CAMediaTimingFunction(name: .easeOut)", self.panel_text)
+        self.assertIn("context.timingFunction = CAMediaTimingFunction(name: .easeIn)", self.panel_text)
+        self.assertIn("visualEffectView.animator().alphaValue = 1", self.panel_text)
+        self.assertIn("visualEffectView.animator().alphaValue = 0", self.panel_text)
+        self.assertIn("visualEffectView.layer?.animator().transform = CATransform3DIdentity", self.panel_text)
+        self.assertIn("visualEffectView.layer?.animator().transform = hiddenTransform", self.panel_text)
+        self.assertIn("!NSWorkspace.shared.accessibilityDisplayShouldReduceMotion", self.panel_text)
+        self.assertIn("if !animated || !shouldAnimateTransitions {", self.panel_text)
 
 
 if __name__ == "__main__":
