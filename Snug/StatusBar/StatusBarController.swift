@@ -283,34 +283,49 @@ final class StatusBarController: NSObject {
 
     // MARK: - Notch Detection
 
+    private func calculateNotchRect() -> CGRect {
+        guard let screen = toggleItem.button?.window?.screen ?? NSScreen.screens.first else {
+            snugLog(" calculateNotchRect: x=0 y=0 width=0 height=0")
+            return .zero
+        }
+
+        let notchHeight = screen.safeAreaInsets.top
+        guard notchHeight > 0,
+              let leftArea = screen.auxiliaryTopLeftArea,
+              let rightArea = screen.auxiliaryTopRightArea
+        else {
+            snugLog(" calculateNotchRect: x=0 y=0 width=0 height=0")
+            return .zero
+        }
+
+        let notchMinX = screen.frame.origin.x + leftArea.maxX
+        let notchMaxX = screen.frame.origin.x + rightArea.minX
+        let notchWidth = notchMaxX - notchMinX
+
+        guard notchWidth > 0 else {
+            snugLog(" calculateNotchRect: x=0 y=0 width=0 height=0")
+            return .zero
+        }
+
+        let notchRect = CGRect(
+            x: notchMinX,
+            y: screen.frame.maxY - notchHeight,
+            width: notchWidth,
+            height: notchHeight
+        )
+        snugLog(" calculateNotchRect: x=%.0f y=%.0f width=%.0f height=%.0f",
+              notchRect.origin.x, notchRect.origin.y, notchRect.width, notchRect.height)
+        return notchRect
+    }
+
     private func calculateSafeLeftX() {
         // NSStatusBar.system.thickness is deprecated and always returns 22 —
         // useless for notch detection. Use NSScreen.safeAreaInsets instead:
         // on notched MacBooks, safeAreaInsets.top > 0.
-        let screen = toggleItem.button?.window?.screen ?? NSScreen.screens.first
+        let notchRect = calculateNotchRect()
+        hasNotch = !notchRect.isEmpty
+        safeLeftX = hasNotch ? notchRect.maxX : 80
 
-        if #available(macOS 12.0, *), let screen {
-            hasNotch = screen.safeAreaInsets.top > 0
-        } else {
-            hasNotch = false
-        }
-
-        if hasNotch, let screen {
-            // Use auxiliaryTopRightArea if available — it gives the exact
-            // rectangle to the right of the camera housing (notch).
-            // Its left edge (origin.x) is where the safe area begins.
-            if #available(macOS 12.0, *),
-               let rightArea = screen.auxiliaryTopRightArea {
-                // auxiliaryTopRightArea is in screen-local coords;
-                // add screen origin for global Quartz/Cocoa X.
-                safeLeftX = screen.frame.origin.x + rightArea.origin.x
-            } else {
-                // Fallback: approximate notch as ~240pt wide centered on screen
-                safeLeftX = screen.frame.origin.x + screen.frame.width / 2 + 120
-            }
-        } else {
-            safeLeftX = 80
-        }
         snugLog(" calculateSafeLeftX: hasNotch=%d, safeLeftX=%.0f",
               hasNotch ? 1 : 0, safeLeftX)
     }
