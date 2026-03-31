@@ -179,7 +179,7 @@ final class StatusBarController: NSObject {
 
     private func updateNotchDropdownItems() {
         guard let notchDropdownCoordinator else { return }
-        notchDropdownCoordinator.update(items: cachedHiddenItemInfo, notchRect: calculateNotchRect())
+        notchDropdownCoordinator.updateItems(cachedHiddenItemInfo)
     }
 
     // MARK: - Icons
