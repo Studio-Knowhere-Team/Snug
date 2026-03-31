@@ -24,12 +24,14 @@ final class StatusBarController: NSObject {
     // MARK: - Menu Bar Item Management
 
     private let itemManager = MenuBarItemManager()
+    private var notchDropdownCoordinator: NotchDropdownCoordinator?
 
     // MARK: - State
 
     private let preferences: AppPreferences
     private var autoHideTimer: Timer?
     private var isToggling = false
+    private var isActivatingItem = false
 
     /// Width used to push items off-screen (recalculated on screen changes)
     private var collapseLength: CGFloat = 10000
@@ -49,6 +51,10 @@ final class StatusBarController: NSObject {
 
     /// Whether the current display has a notch
     private var hasNotch: Bool = false
+
+    /// Cached notch rect — the notch is a physical screen property that rarely
+    /// changes. Recalculated only on screen-parameter changes.
+    private var cachedNotchRect: CGRect = .zero
 
     /// The leftmost safe X position (right edge of notch zone)
     private var safeLeftX: CGFloat = 80
@@ -113,6 +119,7 @@ final class StatusBarController: NSObject {
 
     private func setup() {
         calculateSafeLeftX()
+        setupNotchDropdown()
         updateCollapseLength()
 
         // Configure separator — left half-circle  (
@@ -151,12 +158,38 @@ final class StatusBarController: NSObject {
                 .map { (windowID: $0.windowID, naturalX: $0.frame.minX) }
             self.cachedHiddenItems = hidden
             self.cachedHiddenItemInfo = AccessibilityMenuBarHelper.resolveItems(for: hidden)
+            self.updateNotchDropdownItems()
             snugLog(" setup: resolved %d items at natural width: %@",
                   self.cachedHiddenItemInfo.count,
                   self.cachedHiddenItemInfo.map { $0.name }.joined(separator: ", "))
 
             self.collapseMenuBar()
         }
+    }
+
+    private func setupNotchDropdown() {
+        guard hasNotch, preferences.isPocketEnabled else {
+            notchDropdownCoordinator?.stop()
+            notchDropdownCoordinator = nil
+            return
+        }
+
+        // Stop old coordinator before creating replacement to avoid
+        // overlapping event monitors during ARC deallocation window.
+        notchDropdownCoordinator?.stop()
+        notchDropdownCoordinator = nil
+
+        let coordinator = NotchDropdownCoordinator()
+        coordinator.onItemActivated = { [weak self] info in
+            self?.activateHiddenItem(info)
+        }
+        notchDropdownCoordinator = coordinator
+        coordinator.update(items: cachedHiddenItemInfo, notchRect: cachedNotchRect)
+    }
+
+    private func updateNotchDropdownItems() {
+        guard let notchDropdownCoordinator else { return }
+        notchDropdownCoordinator.updateItems(cachedHiddenItemInfo)
     }
 
     // MARK: - Icons
@@ -283,36 +316,59 @@ final class StatusBarController: NSObject {
 
     // MARK: - Notch Detection
 
+    private func calculateNotchRect() -> CGRect {
+        guard let screen = toggleItem.button?.window?.screen ?? NSScreen.screens.first else {
+            snugLog(" calculateNotchRect: x=0 y=0 width=0 height=0")
+            return .zero
+        }
+
+        let notchHeight = screen.safeAreaInsets.top
+        guard notchHeight > 0,
+              let leftArea = screen.auxiliaryTopLeftArea,
+              let rightArea = screen.auxiliaryTopRightArea
+        else {
+            snugLog(" calculateNotchRect: x=0 y=0 width=0 height=0")
+            return .zero
+        }
+
+        let notchMinX = screen.frame.origin.x + leftArea.maxX
+        let notchMaxX = screen.frame.origin.x + rightArea.minX
+        let notchWidth = notchMaxX - notchMinX
+
+        guard notchWidth > 0 else {
+            snugLog(" calculateNotchRect: x=0 y=0 width=0 height=0")
+            return .zero
+        }
+
+        let notchRect = CGRect(
+            x: notchMinX,
+            y: screen.frame.maxY - notchHeight,
+            width: notchWidth,
+            height: notchHeight
+        )
+        snugLog(" calculateNotchRect: x=%.0f y=%.0f width=%.0f height=%.0f",
+              notchRect.origin.x, notchRect.origin.y, notchRect.width, notchRect.height)
+        return notchRect
+    }
+
     private func calculateSafeLeftX() {
         // NSStatusBar.system.thickness is deprecated and always returns 22 —
         // useless for notch detection. Use NSScreen.safeAreaInsets instead:
         // on notched MacBooks, safeAreaInsets.top > 0.
-        let screen = toggleItem.button?.window?.screen ?? NSScreen.screens.first
+        let notchRect = calculateNotchRect()
+        hasNotch = !notchRect.isEmpty
+        safeLeftX = hasNotch ? notchRect.maxX : 80
 
-        if #available(macOS 12.0, *), let screen {
-            hasNotch = screen.safeAreaInsets.top > 0
-        } else {
-            hasNotch = false
+        // Cache the notch rect — it's a physical screen property that doesn't
+        // change until a display connect/disconnect event.
+        if !notchRect.isEmpty {
+            cachedNotchRect = notchRect
         }
 
-        if hasNotch, let screen {
-            // Use auxiliaryTopRightArea if available — it gives the exact
-            // rectangle to the right of the camera housing (notch).
-            // Its left edge (origin.x) is where the safe area begins.
-            if #available(macOS 12.0, *),
-               let rightArea = screen.auxiliaryTopRightArea {
-                // auxiliaryTopRightArea is in screen-local coords;
-                // add screen origin for global Quartz/Cocoa X.
-                safeLeftX = screen.frame.origin.x + rightArea.origin.x
-            } else {
-                // Fallback: approximate notch as ~240pt wide centered on screen
-                safeLeftX = screen.frame.origin.x + screen.frame.width / 2 + 120
-            }
-        } else {
-            safeLeftX = 80
-        }
-        snugLog(" calculateSafeLeftX: hasNotch=%d, safeLeftX=%.0f",
-              hasNotch ? 1 : 0, safeLeftX)
+        snugLog(" calculateSafeLeftX: hasNotch=%d, safeLeftX=%.0f, cachedNotchRect=(%.0f, %.0f, %.0f, %.0f)",
+              hasNotch ? 1 : 0, safeLeftX,
+              cachedNotchRect.origin.x, cachedNotchRect.origin.y,
+              cachedNotchRect.width, cachedNotchRect.height)
     }
 
     // MARK: - Hidden Items
@@ -444,6 +500,7 @@ final class StatusBarController: NSObject {
         // Resolve names while items are still on-screen (AX needs visible positions).
         if !isCollapsed && cachedHiddenItemInfo.isEmpty {
             cachedHiddenItemInfo = AccessibilityMenuBarHelper.resolveItems(for: cachedHiddenItems)
+            updateNotchDropdownItems()
             snugLog(" collapseMenuBar: resolved %d item names: %@",
                   cachedHiddenItemInfo.count,
                   cachedHiddenItemInfo.map { $0.name }.joined(separator: ", "))
@@ -458,6 +515,7 @@ final class StatusBarController: NSObject {
         // Recalculate in case screen changed or initial value was stale.
         updateCollapseLength()
         separatorItem.length = collapseLength
+        notchDropdownCoordinator?.update(items: cachedHiddenItemInfo, notchRect: cachedNotchRect)
         isToggling = false
 
         // Post-collapse: after the separator has pushed ALL items off-screen,
@@ -484,10 +542,8 @@ final class StatusBarController: NSObject {
                       item.windowID, item.ownerName, item.ownerPID, item.frame.origin.x)
             }
 
-            var countChanged = false
             if allPushed.count != self.postCollapseItemCount {
                 self.postCollapseItemCount = allPushed.count
-                countChanged = true
                 snugLog(" postCollapseDiscovery: count changed to %d", allPushed.count)
             }
 
@@ -510,6 +566,7 @@ final class StatusBarController: NSObject {
                 if !uniqueNew.isEmpty {
                     self.cachedHiddenItemInfo.append(contentsOf: uniqueNew)
                     self.cachedHiddenItemInfo.sort { $0.name < $1.name }
+                    self.updateNotchDropdownItems()
                 }
             }
 
@@ -527,6 +584,7 @@ final class StatusBarController: NSObject {
                           newFromAX.count, newFromAX.map { $0.name }.joined(separator: ", "))
                     self.cachedHiddenItemInfo.append(contentsOf: newFromAX)
                     self.cachedHiddenItemInfo.sort { $0.name < $1.name }
+                    self.updateNotchDropdownItems()
                 }
             }
 
@@ -580,6 +638,7 @@ final class StatusBarController: NSObject {
         // at the same moment the items appear — not 250ms after.
         isCollapsed = false
         updateToggleIcon()
+        notchDropdownCoordinator?.stop()
 
         // Reveal items instantly.
         separatorItem.length = NSStatusItem.variableLength
@@ -615,6 +674,7 @@ final class StatusBarController: NSObject {
         } else {
             cachedHiddenItemInfo = freshInfo
         }
+        updateNotchDropdownItems()
         snugLog(" refreshHiddenItemCache: hidden=%d, resolved=%d",
               hidden.count, cachedHiddenItemInfo.count)
     }
@@ -672,6 +732,8 @@ final class StatusBarController: NSObject {
     }
 
     private func showContextMenu() {
+        notchDropdownCoordinator?.dismissPanel()
+
         let menu = NSMenu()
 
         // Show all hidden items when collapsed
@@ -725,13 +787,20 @@ final class StatusBarController: NSObject {
     /// then AXPresses it so its menu opens in the right place.
     @objc private func hiddenItemClicked(_ sender: NSMenuItem) {
         guard let info = sender.representedObject as? HiddenItemInfo else { return }
+        activateHiddenItem(info)
+    }
 
-        snugLog(" hiddenItemClicked: '%@' ownerPID=%d", info.name, info.ownerPID)
+    func activateHiddenItem(_ info: HiddenItemInfo) {
+        guard !isActivatingItem else { return }
+        isActivatingItem = true
+
+        snugLog(" activateHiddenItem: '%@' ownerPID=%d", info.name, info.ownerPID)
 
         // Expand to natural width — items must be on-screen for Cmd+drag.
         separatorItem.length = NSStatusItem.variableLength
         isCollapsed = false
         updateToggleIcon()
+        notchDropdownCoordinator?.stop()
 
         // After expansion settles, move the item next to the separator then press it.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
@@ -748,7 +817,7 @@ final class StatusBarController: NSObject {
             // Menu bar Y in Quartz coords (top-left origin, typically ~12).
             let menuBarY = freshFrame.midY
 
-            snugLog(" hiddenItemClicked: item at x=%.0f, separator at x=%.0f, target x=%.0f",
+            snugLog(" activateHiddenItem: item at x=%.0f, separator at x=%.0f, target x=%.0f",
                   freshFrame.midX, sepX, targetX)
 
             // Only drag if the item isn't already next to the separator.
@@ -761,7 +830,7 @@ final class StatusBarController: NSObject {
                         to: targetX,
                         menuBarY: menuBarY
                     )
-                    snugLog(" hiddenItemClicked: moveItem=%d", moved ? 1 : 0)
+                    snugLog(" activateHiddenItem: moveItem=%d", moved ? 1 : 0)
 
                     // Back to main thread to press and collapse.
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
@@ -777,8 +846,9 @@ final class StatusBarController: NSObject {
                             fallbackFrame: movedFrame
                         )
                         if !pressed {
-                            snugLog(" hiddenItemClicked: AXPress failed for '%@'", info.name)
+                            snugLog(" activateHiddenItem: AXPress failed for '%@'", info.name)
                         }
+                        self.isActivatingItem = false
                         self.autoCollapseIfNeeded()
                     }
                 }
@@ -790,8 +860,9 @@ final class StatusBarController: NSObject {
                     fallbackFrame: freshFrame
                 )
                 if !pressed {
-                    snugLog(" hiddenItemClicked: AXPress failed for '%@'", info.name)
+                    snugLog(" activateHiddenItem: AXPress failed for '%@'", info.name)
                 }
+                self.isActivatingItem = false
                 self.autoCollapseIfNeeded()
             }
         }
@@ -810,16 +881,37 @@ final class StatusBarController: NSObject {
             autoHideTimer?.invalidate()
             autoHideTimer = nil
         }
+
+        // Re-evaluate pocket state when toggled
+        setupNotchDropdown()
     }
 
     // MARK: - Screen Changes
 
     @objc private func screenParametersChanged() {
-        calculateSafeLeftX()
-        updateCollapseLength()
+        notchDropdownCoordinator?.dismissPanel()
+        autoHideTimer?.invalidate()
+        autoHideTimer = nil
+        notchDropdownCoordinator?.stop()
+        notchDropdownCoordinator = nil
         cachedNaturalPositions = []
         cachedHiddenItems = []
         cachedHiddenItemInfo = []
+        cachedNotchRect = .zero
         postCollapseItemCount = 0
+        isActivatingItem = false
+        calculateSafeLeftX()
+        updateCollapseLength()
+        setupNotchDropdown()
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            guard let self else { return }
+            if self.isCollapsed {
+                self.notchDropdownCoordinator?.update(items: self.cachedHiddenItemInfo, notchRect: self.cachedNotchRect)
+                self.postCollapseDiscovery()
+            } else {
+                self.refreshHiddenItemCache()
+            }
+        }
     }
 }

@@ -412,8 +412,8 @@ enum AccessibilityMenuBarHelper {
     /// synthetic Cmd+drag events.  Returns true if the drag was dispatched.
     /// The drag happens in Quartz (top-left origin) screen coordinates.
     /// The cursor is hidden during the operation so the user sees nothing.
-    static func moveItem(from sourceX: CGFloat, to targetX: CGFloat, menuBarY: CGFloat) -> Bool {
-        guard isGranted else { return false }
+    nonisolated static func moveItem(from sourceX: CGFloat, to targetX: CGFloat, menuBarY: CGFloat) -> Bool {
+        guard AXIsProcessTrusted() else { return false }
 
         let y = menuBarY
 
