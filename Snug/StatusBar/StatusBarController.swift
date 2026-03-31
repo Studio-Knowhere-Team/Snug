@@ -493,6 +493,7 @@ final class StatusBarController: NSObject {
 
         autoHideTimer?.invalidate()
         autoHideTimer = nil
+        notchDropdownCoordinator?.stop()
 
         // Recalculate in case screen changed or initial value was stale.
         updateCollapseLength()

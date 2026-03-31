@@ -66,11 +66,12 @@ class StatusBarControllerIssueTests(unittest.TestCase):
         self.assertRegex(
             self.status_bar_text,
             re.compile(
+                r"notchDropdownCoordinator\?\.stop\(\).*?"
                 r"updateCollapseLength\(\)\s*"
                 r"separatorItem\.length = collapseLength\s*"
                 r"notchDropdownCoordinator\?\.update\(items: cachedHiddenItemInfo, notchRect: calculateNotchRect\(\)\)\s*"
                 r"isToggling = false",
-                re.MULTILINE,
+                re.MULTILINE | re.DOTALL,
             ),
         )
 
