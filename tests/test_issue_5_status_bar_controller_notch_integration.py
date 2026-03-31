@@ -107,6 +107,7 @@ class StatusBarControllerIssueTests(unittest.TestCase):
                 r"isCollapsed = false\s*"
                 r"updateToggleIcon\(\)\s*"
                 r"notchDropdownCoordinator\?\.stop\(\)\s*"
+                r"notchDropdownCoordinator = nil\s*"
                 r".*?separatorItem\.length = NSStatusItem\.variableLength",
                 re.MULTILINE | re.DOTALL,
             ),

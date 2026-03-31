@@ -642,6 +642,7 @@ final class StatusBarController: NSObject {
         isCollapsed = false
         updateToggleIcon()
         notchDropdownCoordinator?.stop()
+        notchDropdownCoordinator = nil
 
         // Reveal items instantly.
         separatorItem.length = NSStatusItem.variableLength
