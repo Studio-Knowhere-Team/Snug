@@ -639,6 +639,7 @@ final class StatusBarController: NSObject {
         isCollapsed = false
         updateToggleIcon()
         notchDropdownCoordinator?.stop()
+        notchDropdownCoordinator = nil
 
         // Reveal items instantly.
         separatorItem.length = NSStatusItem.variableLength
@@ -801,6 +802,7 @@ final class StatusBarController: NSObject {
         isCollapsed = false
         updateToggleIcon()
         notchDropdownCoordinator?.stop()
+        notchDropdownCoordinator = nil
 
         // After expansion settles, move the item next to the separator then press it.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
