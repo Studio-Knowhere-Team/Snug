@@ -6,6 +6,18 @@
         <description>Snug update feed</description>
         <language>en</language>
         <item>
+            <title>Version 1.1</title>
+            <pubDate>Mon, 31 Mar 2026 12:14:00 +0100</pubDate>
+            <sparkle:version>3</sparkle:version>
+            <sparkle:shortVersionString>1.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure
+                url="https://github.com/Studio-Knowhere-Team/Snug/releases/download/v1.1/Snug-1.1.dmg"
+                sparkle:edSignature="0pVJXdZndPXWPXriRr4vSbZFrC0V3naw11KkxIH1UrnwKBUbfo4e6mECQ8LdcJ7OH/eNwyHFs3+SfKUfdfgoBg=="
+                length="1708455"
+                type="application/octet-stream"/>
+        </item>
+        <item>
             <title>Version 1.0.1</title>
             <pubDate>Mon, 30 Mar 2026 16:57:00 +0100</pubDate>
             <sparkle:version>2</sparkle:version>
