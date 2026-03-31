@@ -525,10 +525,8 @@ final class StatusBarController: NSObject {
                       item.windowID, item.ownerName, item.ownerPID, item.frame.origin.x)
             }
 
-            var countChanged = false
             if allPushed.count != self.postCollapseItemCount {
                 self.postCollapseItemCount = allPushed.count
-                countChanged = true
                 snugLog(" postCollapseDiscovery: count changed to %d", allPushed.count)
             }
 
