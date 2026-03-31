@@ -179,7 +179,19 @@ class StatusBarControllerIssueTests(unittest.TestCase):
                 re.MULTILINE,
             ),
         )
-        self.assertIn("notchDropdownCoordinator?.stop()", self.status_bar_text)
+        activation_match = re.search(
+            r"func activateHiddenItem\(_ info: HiddenItemInfo\) \{(?P<body>.*?)\n    \}",
+            self.status_bar_text,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(activation_match)
+        activation_body = activation_match.group("body")
+        self.assertIn("notchDropdownCoordinator?.stop()", activation_body)
+        self.assertIn("notchDropdownCoordinator = nil", activation_body)
+        self.assertLess(
+            activation_body.index("notchDropdownCoordinator?.stop()"),
+            activation_body.index("notchDropdownCoordinator = nil"),
+        )
         self.assertGreaterEqual(self.status_bar_text.count("self.isActivatingItem = false"), 2)
         self.assertRegex(
             self.status_bar_text,
