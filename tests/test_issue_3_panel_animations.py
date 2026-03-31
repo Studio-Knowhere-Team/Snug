@@ -12,47 +12,40 @@ class NotchDropdownPanelAnimationIssueTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.panel_text = NOTCH_DROPDOWN_PANEL.read_text(encoding="utf-8")
 
-    def test_show_animation_uses_required_duration_timing_alpha_and_translate(self) -> None:
-        self.assertIn("private let showAnimationDuration: TimeInterval = 0.2", self.panel_text)
-        self.assertIn("private let hiddenYOffset: CGFloat = -4", self.panel_text)
+    def test_show_animation_uses_calayer_mask_reveal_from_zero_to_full_height(self) -> None:
+        self.assertIn("private let showAnimationDuration: TimeInterval = 0.25", self.panel_text)
         self.assertRegex(
             self.panel_text,
             re.compile(
-                r"private func animateShow\(\s*"
-                r"token: UUID,\s*"
-                r"fromOpacity: Float,\s*"
-                r"fromTranslationY: CGFloat\s*"
-                r"\) \{\s*"
-                r"panelState = \.showing\s*"
-                r"visualEffectView\.alphaValue = CGFloat\(fromOpacity\)\s*"
-                r"visualEffectView\.layer\?\.transform = translationTransform\(y: fromTranslationY\)\s*"
-                r"NSAnimationContext\.runAnimationGroup \{ context in\s*"
-                r"context\.duration = showAnimationDuration\s*"
-                r"context\.timingFunction = CAMediaTimingFunction\(name: \.easeOut\)\s*"
-                r"visualEffectView\.animator\(\)\.alphaValue = 1\s*"
-                r"visualEffectView\.layer\?\.animator\(\)\.transform = CATransform3DIdentity",
+                r"let maskLayer = CALayer\(\)\s*"
+                r"maskLayer\.backgroundColor = NSColor\.black\.cgColor\s*"
+                r"maskLayer\.anchorPoint = CGPoint\(x: 0\.5, y: 1\).*?"
+                r"maskLayer\.bounds = CGRect\(x: 0, y: 0, width: targetFrame\.width, height: 0\)",
+                re.MULTILINE | re.DOTALL,
+            ),
+        )
+        self.assertRegex(
+            self.panel_text,
+            re.compile(
+                r'let anim = CABasicAnimation\(keyPath: "bounds\.size\.height"\)\s*'
+                r"anim\.fromValue = 0\s*"
+                r"anim\.toValue = fullContentHeight\s*"
+                r"anim\.duration = showAnimationDuration\s*"
+                r"anim\.timingFunction = CAMediaTimingFunction\(name: \.easeOut\)",
                 re.MULTILINE,
             ),
         )
 
-    def test_hide_animation_uses_required_duration_timing_reverse_alpha_and_translate(self) -> None:
-        self.assertIn("private let hideAnimationDuration: TimeInterval = 0.15", self.panel_text)
+    def test_hide_animation_uses_calayer_mask_collapse_from_full_to_zero(self) -> None:
+        self.assertIn("private let hideAnimationDuration: TimeInterval = 0.18", self.panel_text)
         self.assertRegex(
             self.panel_text,
             re.compile(
-                r"private func animateHide\(\s*"
-                r"token: UUID,\s*"
-                r"fromOpacity: Float,\s*"
-                r"fromTranslationY: CGFloat\s*"
-                r"\) \{\s*"
-                r"panelState = \.hiding\s*"
-                r"visualEffectView\.alphaValue = CGFloat\(fromOpacity\)\s*"
-                r"visualEffectView\.layer\?\.transform = translationTransform\(y: fromTranslationY\)\s*"
-                r"NSAnimationContext\.runAnimationGroup \{ context in\s*"
-                r"context\.duration = hideAnimationDuration\s*"
-                r"context\.timingFunction = CAMediaTimingFunction\(name: \.easeIn\)\s*"
-                r"visualEffectView\.animator\(\)\.alphaValue = 0\s*"
-                r"visualEffectView\.layer\?\.animator\(\)\.transform = hiddenTransform",
+                r'let anim = CABasicAnimation\(keyPath: "bounds\.size\.height"\)\s*'
+                r"anim\.fromValue = fullContentHeight\s*"
+                r"anim\.toValue = 0\s*"
+                r"anim\.duration = hideAnimationDuration\s*"
+                r"anim\.timingFunction = CAMediaTimingFunction\(name: \.easeIn\)",
                 re.MULTILINE,
             ),
         )
@@ -61,11 +54,9 @@ class NotchDropdownPanelAnimationIssueTests(unittest.TestCase):
         self.assertRegex(
             self.panel_text,
             re.compile(
-                r"private func animateHide\([\s\S]*?"
-                r"completionHandler: \{ \[weak self\] in\s*"
+                r"CATransaction\.setCompletionBlock \{ \[weak self\] in\s*"
                 r"guard let self, self\.animationToken == token else \{ return \}\s*"
-                r"self\.completeHide\(\)\s*"
-                r"\}",
+                r"self\.completeHide\(\)",
                 re.MULTILINE,
             ),
         )
@@ -73,10 +64,9 @@ class NotchDropdownPanelAnimationIssueTests(unittest.TestCase):
             self.panel_text,
             re.compile(
                 r"private func completeHide\(\) \{\s*"
+                r"panel\.contentView\?\.layer\?\.mask = nil\s*"
                 r"panel\.orderOut\(nil\)\s*"
-                r"panelState = \.hidden\s*"
-                r"visualEffectView\.alphaValue = 0\s*"
-                r"visualEffectView\.layer\?\.transform = hiddenTransform",
+                r"panelState = \.hidden",
                 re.MULTILINE,
             ),
         )
@@ -88,55 +78,37 @@ class NotchDropdownPanelAnimationIssueTests(unittest.TestCase):
             self.panel_text,
             re.compile(
                 r"if !shouldAnimateTransitions \{\s*"
-                r"panelState = \.visible\s*"
-                r"visualEffectView\.alphaValue = 1\s*"
-                r"visualEffectView\.layer\?\.transform = CATransform3DIdentity",
+                r"// No animation — show fully\s*"
+                r"panel\.contentView\?\.layer\?\.mask = nil\s*"
+                r"panel\.orderFront\(nil\)\s*"
+                r"panelState = \.visible",
                 re.MULTILINE,
             ),
         )
         self.assertIn("if !animated || !shouldAnimateTransitions {", self.panel_text)
         self.assertIn("completeHide()", self.panel_text)
 
-    def test_show_and_hide_resume_from_presentation_layer_to_avoid_visual_jank(self) -> None:
+    def test_show_uses_catransaction_completion_to_transition_to_visible_state(self) -> None:
         self.assertRegex(
             self.panel_text,
             re.compile(
-                r"let token = prepareForAnimation\(\)\s*"
-                r"let startingTranslationY = currentTranslationY\(from: visualEffectView\.layer\?\.presentation\(\)\) \?\? currentTranslationY\(from: visualEffectView\.layer\) \?\? hiddenYOffset\s*"
-                r"let startingOpacity = currentOpacity\(from: visualEffectView\.layer\?\.presentation\(\)\) \?\? currentOpacity\(from: visualEffectView\.layer\) \?\? 0",
-                re.MULTILINE,
-            ),
-        )
-        self.assertRegex(
-            self.panel_text,
-            re.compile(
-                r"let token = prepareForAnimation\(\)\s*"
-                r"let startingOpacity = currentOpacity\(from: visualEffectView\.layer\?\.presentation\(\)\) \?\? currentOpacity\(from: visualEffectView\.layer\) \?\? 1\s*"
-                r"let startingTranslationY = currentTranslationY\(from: visualEffectView\.layer\?\.presentation\(\)\) \?\? currentTranslationY\(from: visualEffectView\.layer\) \?\? 0",
+                r"CATransaction\.begin\(\)\s*"
+                r"CATransaction\.setCompletionBlock \{ \[weak self\] in\s*"
+                r"guard let self, self\.animationToken == token else \{ return \}\s*"
+                r"self\.panel\.contentView\?\.layer\?\.mask = nil\s*"
+                r"self\.panelState = \.visible",
                 re.MULTILINE,
             ),
         )
 
-    def test_animation_token_and_presentation_sync_cancel_overlapping_completions(self) -> None:
-        self.assertRegex(
-            self.panel_text,
-            re.compile(
-                r"private func prepareForAnimation\(\) -> UUID \{\s*"
-                r"let token = UUID\(\)\s*"
-                r"animationToken = token\s*"
-                r"syncVisualStateFromPresentationLayer\(\)\s*"
-                r"visualEffectView\.layer\?\.removeAllAnimations\(\)\s*"
-                r"return token",
-                re.MULTILINE,
-            ),
-        )
+    def test_animation_token_prevents_overlapping_completions(self) -> None:
+        self.assertIn("private var animationToken = UUID()", self.panel_text)
         self.assertEqual(
             self.panel_text.count("guard let self, self.animationToken == token else { return }"),
             2,
         )
 
     def test_animation_avoids_frame_height_changes_during_transition(self) -> None:
-        self.assertIn("panel.setContentSize(targetFrame.size)", self.panel_text)
         self.assertIn("panel.setFrame(targetFrame, display: false)", self.panel_text)
         self.assertNotIn("panel.animator().setFrame", self.panel_text)
         self.assertNotIn("panel.animator().frame", self.panel_text)

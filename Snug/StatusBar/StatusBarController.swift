@@ -52,6 +52,10 @@ final class StatusBarController: NSObject {
     /// Whether the current display has a notch
     private var hasNotch: Bool = false
 
+    /// Cached notch rect — the notch is a physical screen property that rarely
+    /// changes. Recalculated only on screen-parameter changes.
+    private var cachedNotchRect: CGRect = .zero
+
     /// The leftmost safe X position (right edge of notch zone)
     private var safeLeftX: CGFloat = 80
 
@@ -164,17 +168,23 @@ final class StatusBarController: NSObject {
     }
 
     private func setupNotchDropdown() {
-        guard hasNotch else {
+        guard hasNotch, preferences.isPocketEnabled else {
+            notchDropdownCoordinator?.stop()
             notchDropdownCoordinator = nil
             return
         }
+
+        // Stop old coordinator before creating replacement to avoid
+        // overlapping event monitors during ARC deallocation window.
+        notchDropdownCoordinator?.stop()
+        notchDropdownCoordinator = nil
 
         let coordinator = NotchDropdownCoordinator()
         coordinator.onItemActivated = { [weak self] info in
             self?.activateHiddenItem(info)
         }
         notchDropdownCoordinator = coordinator
-        coordinator.update(items: cachedHiddenItemInfo, notchRect: calculateNotchRect())
+        coordinator.update(items: cachedHiddenItemInfo, notchRect: cachedNotchRect)
     }
 
     private func updateNotchDropdownItems() {
@@ -349,8 +359,16 @@ final class StatusBarController: NSObject {
         hasNotch = !notchRect.isEmpty
         safeLeftX = hasNotch ? notchRect.maxX : 80
 
-        snugLog(" calculateSafeLeftX: hasNotch=%d, safeLeftX=%.0f",
-              hasNotch ? 1 : 0, safeLeftX)
+        // Cache the notch rect — it's a physical screen property that doesn't
+        // change until a display connect/disconnect event.
+        if !notchRect.isEmpty {
+            cachedNotchRect = notchRect
+        }
+
+        snugLog(" calculateSafeLeftX: hasNotch=%d, safeLeftX=%.0f, cachedNotchRect=(%.0f, %.0f, %.0f, %.0f)",
+              hasNotch ? 1 : 0, safeLeftX,
+              cachedNotchRect.origin.x, cachedNotchRect.origin.y,
+              cachedNotchRect.width, cachedNotchRect.height)
     }
 
     // MARK: - Hidden Items
@@ -493,12 +511,11 @@ final class StatusBarController: NSObject {
 
         autoHideTimer?.invalidate()
         autoHideTimer = nil
-        notchDropdownCoordinator?.stop()
 
         // Recalculate in case screen changed or initial value was stale.
         updateCollapseLength()
         separatorItem.length = collapseLength
-        notchDropdownCoordinator?.update(items: cachedHiddenItemInfo, notchRect: calculateNotchRect())
+        notchDropdownCoordinator?.update(items: cachedHiddenItemInfo, notchRect: cachedNotchRect)
         isToggling = false
 
         // Post-collapse: after the separator has pushed ALL items off-screen,
@@ -864,6 +881,9 @@ final class StatusBarController: NSObject {
             autoHideTimer?.invalidate()
             autoHideTimer = nil
         }
+
+        // Re-evaluate pocket state when toggled
+        setupNotchDropdown()
     }
 
     // MARK: - Screen Changes
@@ -877,6 +897,7 @@ final class StatusBarController: NSObject {
         cachedNaturalPositions = []
         cachedHiddenItems = []
         cachedHiddenItemInfo = []
+        cachedNotchRect = .zero
         postCollapseItemCount = 0
         isActivatingItem = false
         calculateSafeLeftX()
@@ -886,7 +907,7 @@ final class StatusBarController: NSObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
             guard let self else { return }
             if self.isCollapsed {
-                self.notchDropdownCoordinator?.update(items: self.cachedHiddenItemInfo, notchRect: self.calculateNotchRect())
+                self.notchDropdownCoordinator?.update(items: self.cachedHiddenItemInfo, notchRect: self.cachedNotchRect)
                 self.postCollapseDiscovery()
             } else {
                 self.refreshHiddenItemCache()

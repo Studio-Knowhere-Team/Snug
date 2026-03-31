@@ -44,6 +44,19 @@ struct GeneralSettingsView: View {
             }
 
             Section {
+                Toggle("Show Pocket below notch", isOn: Binding(
+                    get: { preferences.isPocketEnabled },
+                    set: { preferences.isPocketEnabled = $0 }
+                ))
+
+                Text("When collapsed, hover over the notch to reveal hidden icons in a dropdown.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("Pocket")
+            }
+
+            Section {
                 VStack(alignment: .leading, spacing: 8) {
                     Label {
                         Text("Hold \u{2318} (Cmd) and drag menu bar icons to the left of the open circle.")

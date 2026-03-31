@@ -56,7 +56,7 @@ class CalculateNotchRectIssueTests(unittest.TestCase):
         self.assertIn("let notchRect = calculateNotchRect()", self.status_bar_text)
         self.assertIn("hasNotch = !notchRect.isEmpty", self.status_bar_text)
         self.assertIn("safeLeftX = hasNotch ? notchRect.maxX : 80", self.status_bar_text)
-        self.assertIn('snugLog(" calculateSafeLeftX: hasNotch=%d, safeLeftX=%.0f"', self.status_bar_text)
+        self.assertIn('snugLog(" calculateSafeLeftX: hasNotch=%d, safeLeftX=%.0f, cachedNotchRect=(%.0f, %.0f, %.0f, %.0f)"', self.status_bar_text)
 
 
 if __name__ == "__main__":

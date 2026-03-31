@@ -190,16 +190,17 @@ class NotchDropdownCoordinatorIssueTests(unittest.TestCase):
         self.assertRegex(
             self.coordinator_text,
             re.compile(
-                r"localEventMonitor = NSEvent\.addLocalMonitorForEvents\(matching: \[\.(?:mouseMoved|keyDown), \.(?:mouseMoved|keyDown)\]\) \{ \[weak self\] event in",
+                r"localEventMonitor = NSEvent\.addLocalMonitorForEvents\(matching: \[\.(?:mouseMoved|keyDown), \.(?:mouseMoved|keyDown)\]\) \{ \[weak self\] event -> NSEvent\? in",
                 re.MULTILINE,
             ),
         )
-        self.assertIn("if event.type == .keyDown, event.keyCode == 53 {", self.coordinator_text)
+        self.assertIn("let eventType = event.type", self.coordinator_text)
+        self.assertIn("if eventType == .keyDown, event.keyCode == 53 {", self.coordinator_text)
         self.assertIn('snugLog(" NotchDropdownCoordinator: escape pressed")', self.coordinator_text)
         self.assertIn('self.dismissPanel(animated: true, reason: "escape")', self.coordinator_text)
         self.assertIn("return nil", self.coordinator_text)
-        self.assertIn("if event.type == .mouseMoved {", self.coordinator_text)
-        self.assertIn("self.handleMouseActivity()", self.coordinator_text)
+        self.assertIn("if eventType == .mouseMoved {", self.coordinator_text)
+        self.assertIn("self?.handleMouseActivity()", self.coordinator_text)
 
     def test_edge_detection_and_grace_timer_only_fire_on_zone_transitions(self) -> None:
         self.assertRegex(

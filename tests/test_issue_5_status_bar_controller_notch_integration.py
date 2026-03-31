@@ -28,21 +28,26 @@ class StatusBarControllerIssueTests(unittest.TestCase):
             ),
         )
 
-    def test_setup_notch_dropdown_is_guarded_by_has_notch_and_wires_activation_callback(self) -> None:
+    def test_setup_notch_dropdown_is_guarded_by_has_notch_and_pocket_enabled_and_wires_activation_callback(self) -> None:
         self.assertRegex(
             self.status_bar_text,
             re.compile(
                 r"private func setupNotchDropdown\(\) \{\s*"
-                r"guard hasNotch else \{\s*"
+                r"guard hasNotch, preferences\.isPocketEnabled else \{\s*"
+                r"notchDropdownCoordinator\?\.stop\(\)\s*"
                 r"notchDropdownCoordinator = nil\s*"
                 r"return\s*"
                 r"\}\s*"
+                r"// Stop old coordinator before creating replacement.*?\s*"
+                r"// overlapping event monitors during ARC deallocation window\.\s*"
+                r"notchDropdownCoordinator\?\.stop\(\)\s*"
+                r"notchDropdownCoordinator = nil\s*"
                 r"let coordinator = NotchDropdownCoordinator\(\)\s*"
                 r"coordinator\.onItemActivated = \{ \[weak self\] info in\s*"
                 r"self\?\.activateHiddenItem\(info\)\s*"
                 r"\}\s*"
                 r"notchDropdownCoordinator = coordinator\s*"
-                r"coordinator\.update\(items: cachedHiddenItemInfo, notchRect: calculateNotchRect\(\)\)",
+                r"coordinator\.update\(items: cachedHiddenItemInfo, notchRect: cachedNotchRect\)",
                 re.MULTILINE,
             ),
         )
@@ -66,12 +71,11 @@ class StatusBarControllerIssueTests(unittest.TestCase):
         self.assertRegex(
             self.status_bar_text,
             re.compile(
-                r"notchDropdownCoordinator\?\.stop\(\).*?"
                 r"updateCollapseLength\(\)\s*"
                 r"separatorItem\.length = collapseLength\s*"
-                r"notchDropdownCoordinator\?\.update\(items: cachedHiddenItemInfo, notchRect: calculateNotchRect\(\)\)\s*"
+                r"notchDropdownCoordinator\?\.update\(items: cachedHiddenItemInfo, notchRect: cachedNotchRect\)\s*"
                 r"isToggling = false",
-                re.MULTILINE | re.DOTALL,
+                re.MULTILINE,
             ),
         )
 
@@ -148,6 +152,7 @@ class StatusBarControllerIssueTests(unittest.TestCase):
                 r"cachedNaturalPositions = \[\]\s*"
                 r"cachedHiddenItems = \[\]\s*"
                 r"cachedHiddenItemInfo = \[\]\s*"
+                r"cachedNotchRect = \.zero\s*"
                 r"postCollapseItemCount = 0\s*"
                 r"isActivatingItem = false\s*"
                 r"calculateSafeLeftX\(\)\s*"
@@ -162,7 +167,7 @@ class StatusBarControllerIssueTests(unittest.TestCase):
                 r"DispatchQueue\.main\.asyncAfter\(deadline: \.now\(\) \+ 0\.2\) \{ \[weak self\] in\s*"
                 r"guard let self else \{ return \}\s*"
                 r"if self\.isCollapsed \{\s*"
-                r"self\.notchDropdownCoordinator\?\.update\(items: self\.cachedHiddenItemInfo, notchRect: self\.calculateNotchRect\(\)\)\s*"
+                r"self\.notchDropdownCoordinator\?\.update\(items: self\.cachedHiddenItemInfo, notchRect: self\.cachedNotchRect\)\s*"
                 r"self\.postCollapseDiscovery\(\)\s*"
                 r"\} else \{\s*"
                 r"self\.refreshHiddenItemCache\(\)",

@@ -27,16 +27,15 @@ class AccessibilityAndPolishIssueTests(unittest.TestCase):
             self.info_plist_text,
         )
 
-    def test_collapse_menu_bar_stops_coordinator_before_restarting_tracking_after_auto_hide(self) -> None:
+    def test_collapse_menu_bar_updates_coordinator_after_auto_hide(self) -> None:
         self.assertRegex(
             self.status_bar_text,
             re.compile(
                 r"private func collapseMenuBar\(\) \{.*?"
                 r"autoHideTimer\?\.invalidate\(\)\s*"
                 r"autoHideTimer = nil\s*"
-                r"notchDropdownCoordinator\?\.stop\(\)\s*"
                 r".*?separatorItem\.length = collapseLength\s*"
-                r"notchDropdownCoordinator\?\.update\(items: cachedHiddenItemInfo, notchRect: calculateNotchRect\(\)\)",
+                r"notchDropdownCoordinator\?\.update\(items: cachedHiddenItemInfo, notchRect: cachedNotchRect\)",
                 re.MULTILINE | re.DOTALL,
             ),
         )
@@ -59,6 +58,7 @@ class AccessibilityAndPolishIssueTests(unittest.TestCase):
                 r"cachedNaturalPositions = \[\]\s*"
                 r"cachedHiddenItems = \[\]\s*"
                 r"cachedHiddenItemInfo = \[\]\s*"
+                r"cachedNotchRect = \.zero\s*"
                 r"postCollapseItemCount = 0\s*"
                 r"isActivatingItem = false\s*"
                 r"calculateSafeLeftX\(\)\s*"
@@ -75,7 +75,8 @@ class AccessibilityAndPolishIssueTests(unittest.TestCase):
             self.status_bar_text,
             re.compile(
                 r"private func setupNotchDropdown\(\) \{\s*"
-                r"guard hasNotch else \{\s*"
+                r"guard hasNotch, preferences\.isPocketEnabled else \{\s*"
+                r"notchDropdownCoordinator\?\.stop\(\)\s*"
                 r"notchDropdownCoordinator = nil\s*"
                 r"return",
                 re.MULTILINE,

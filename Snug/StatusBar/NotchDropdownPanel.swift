@@ -26,12 +26,26 @@ final class NotchDropdownPanel: NSObject {
     // MARK: - UI Elements
 
     private let panel: PanelWindow
+    private let containerView = NSView()
     private let visualEffectView = NSVisualEffectView()
+    private let tintView = NSView()
+    private let borderLayer = CAShapeLayer()
     private let scrollView = NSScrollView()
     private let verticalStackView = NSStackView()
 
+    private let desaturateFilter: CIFilter? = CIFilter(name: "CIColorControls")
+    private var isActivated = false
+
     private var panelState: PanelState = .hidden
     private var animationToken = UUID()
+    private var filterRemovalToken = UUID()
+
+    /// The full target frame (extends up behind the notch so the background
+    /// joins seamlessly). The panel window is always this size; we animate
+    /// by clipping the visible portion.
+    private var targetFrame: CGRect = .zero
+    private var fullContentHeight: CGFloat = 0
+    private var notchWidth: CGFloat = 0
 
     // MARK: - Layout Constants
 
@@ -42,9 +56,9 @@ final class NotchDropdownPanel: NSObject {
     private let maxVisibleRows = 3
     private let maxScrollHeight: CGFloat = 160
     private let cornerRadius: CGFloat = 12
-    private let showAnimationDuration: TimeInterval = 0.2
-    private let hideAnimationDuration: TimeInterval = 0.15
-    private let hiddenYOffset: CGFloat = -4
+    private let borderWidth: CGFloat = 2
+    private let showAnimationDuration: TimeInterval = 0.25
+    private let hideAnimationDuration: TimeInterval = 0.18
 
     // MARK: - Init
 
@@ -59,6 +73,18 @@ final class NotchDropdownPanel: NSObject {
         super.init()
         setupPanel()
         setupContentView()
+
+        // Listen for when the panel becomes key (user clicked into it)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(panelBecameKey),
+            name: NSWindow.didBecomeKeyNotification,
+            object: panel
+        )
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
 
     // MARK: - Public API
@@ -70,31 +96,77 @@ final class NotchDropdownPanel: NSObject {
             return
         }
 
-        snugLog(" NotchDropdownPanel.show: items=%d, notch=(%.0f, %.0f, %.0f, %.0f), state=%@",
-              items.count, notchRect.origin.x, notchRect.origin.y,
-              notchRect.width, notchRect.height, "\(panelState)")
+        snugLog(" NotchDropdownPanel.show: items=%d, state=%@",
+              items.count, "\(panelState)")
 
+        notchWidth = notchRect.width
         rebuildGrid(items: items, notchRect: notchRect)
-        let targetFrame = frame(forContentSize: contentSize(), below: notchRect)
+        let size = contentSize()
+        fullContentHeight = size.height
 
-        let token = prepareForAnimation()
-        let startingTranslationY = currentTranslationY(from: visualEffectView.layer?.presentation()) ?? currentTranslationY(from: visualEffectView.layer) ?? hiddenYOffset
-        let startingOpacity = currentOpacity(from: visualEffectView.layer?.presentation()) ?? currentOpacity(from: visualEffectView.layer) ?? 0
+        targetFrame = CGRect(
+            x: notchRect.origin.x,
+            y: round(notchRect.minY - size.height),
+            width: notchWidth,
+            height: size.height
+        )
 
-        panel.setContentSize(targetFrame.size)
+        // Set the panel to full target frame always
         panel.setFrame(targetFrame, display: false)
-        panel.orderFront(nil)
         panel.alphaValue = 1
 
+        // Start greyscale — user clicks into pocket to activate
+        applyGreyscale()
+
+        // Position content at the top of the panel (it will be clipped)
+        containerView.frame = NSRect(origin: .zero, size: targetFrame.size)
+        visualEffectView.frame = containerView.bounds
+        scrollView.frame = containerView.bounds
+        updateBorderPath()
+
+        let token = UUID()
+        animationToken = token
+
         if !shouldAnimateTransitions {
+            // No animation — show fully
+            panel.contentView?.layer?.mask = nil
+            panel.orderFront(nil)
             panelState = .visible
-            visualEffectView.alphaValue = 1
-            visualEffectView.layer?.transform = CATransform3DIdentity
-            snugLog(" NotchDropdownPanel: state → visible")
+            snugLog(" NotchDropdownPanel: state → visible (no animation)")
             return
         }
 
-        animateShow(token: token, fromOpacity: startingOpacity, fromTranslationY: startingTranslationY)
+        // Clip mask anchored to top — animate height from 0 to full
+        let maskLayer = CALayer()
+        maskLayer.backgroundColor = NSColor.black.cgColor
+        maskLayer.anchorPoint = CGPoint(x: 0.5, y: 1) // anchor at top edge (layer coords: y=1 is top)
+        maskLayer.bounds = CGRect(x: 0, y: 0, width: targetFrame.width, height: 0)
+        maskLayer.position = CGPoint(x: targetFrame.width / 2, y: fullContentHeight) // top center
+        panel.contentView?.layer?.mask = maskLayer
+        panel.orderFront(nil)
+
+        panelState = .showing
+
+        // Animate bounds height from 0 → full (reveals content sliding down from notch)
+        let anim = CABasicAnimation(keyPath: "bounds.size.height")
+        anim.fromValue = 0
+        anim.toValue = fullContentHeight
+        anim.duration = showAnimationDuration
+        anim.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        anim.fillMode = .forwards
+        anim.isRemovedOnCompletion = false
+
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { [weak self] in
+            guard let self, self.animationToken == token else { return }
+            self.panel.contentView?.layer?.mask = nil
+            self.panelState = .visible
+            snugLog(" NotchDropdownPanel: state → visible")
+        }
+
+        maskLayer.add(anim, forKey: "revealHeight")
+
+        CATransaction.commit()
     }
 
     func hide(animated: Bool) {
@@ -108,11 +180,35 @@ final class NotchDropdownPanel: NSObject {
             return
         }
 
-        let token = prepareForAnimation()
-        let startingOpacity = currentOpacity(from: visualEffectView.layer?.presentation()) ?? currentOpacity(from: visualEffectView.layer) ?? 1
-        let startingTranslationY = currentTranslationY(from: visualEffectView.layer?.presentation()) ?? currentTranslationY(from: visualEffectView.layer) ?? 0
+        let token = UUID()
+        animationToken = token
+        panelState = .hiding
 
-        animateHide(token: token, fromOpacity: startingOpacity, fromTranslationY: startingTranslationY)
+        // Clip mask anchored to top — animate height from full to 0 (slides up into notch)
+        let maskLayer = CALayer()
+        maskLayer.backgroundColor = NSColor.black.cgColor
+        maskLayer.anchorPoint = CGPoint(x: 0.5, y: 1)
+        maskLayer.bounds = CGRect(x: 0, y: 0, width: targetFrame.width, height: fullContentHeight)
+        maskLayer.position = CGPoint(x: targetFrame.width / 2, y: fullContentHeight)
+        panel.contentView?.layer?.mask = maskLayer
+
+        let anim = CABasicAnimation(keyPath: "bounds.size.height")
+        anim.fromValue = fullContentHeight
+        anim.toValue = 0
+        anim.duration = hideAnimationDuration
+        anim.timingFunction = CAMediaTimingFunction(name: .easeIn)
+        anim.fillMode = .forwards
+        anim.isRemovedOnCompletion = false
+
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { [weak self] in
+            guard let self, self.animationToken == token else { return }
+            self.completeHide()
+        }
+
+        maskLayer.add(anim, forKey: "hideHeight")
+
+        CATransaction.commit()
     }
 
     // MARK: - Panel Setup
@@ -120,7 +216,7 @@ final class NotchDropdownPanel: NSObject {
     private func setupPanel() {
         panel.level = .statusBar
         panel.backgroundColor = .clear
-        panel.hasShadow = true
+        panel.hasShadow = false
         panel.hidesOnDeactivate = false
         panel.isFloatingPanel = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
@@ -132,32 +228,70 @@ final class NotchDropdownPanel: NSObject {
     }
 
     private func setupContentView() {
-        visualEffectView.material = .menu
+        // Container clips everything
+        containerView.wantsLayer = true
+        containerView.layer?.masksToBounds = true
+
+        // Frosted dark background
+        visualEffectView.material = .dark
         visualEffectView.blendingMode = .behindWindow
         visualEffectView.state = .active
         visualEffectView.wantsLayer = true
-        visualEffectView.autoresizingMask = [.width, .height]
-        visualEffectView.alphaValue = 0
-        visualEffectView.layer?.transform = hiddenTransform
 
+        // All corners rounded
+        visualEffectView.layer?.cornerRadius = cornerRadius
+        visualEffectView.layer?.masksToBounds = true
+
+        // Dark tint overlay
+        tintView.wantsLayer = true
+        tintView.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.4).cgColor
+        tintView.autoresizingMask = [.width, .height]
+
+        // U-shaped border (sides + bottom, not top)
+        borderLayer.fillColor = nil
+        borderLayer.strokeColor = NSColor.white.withAlphaComponent(0.45).cgColor
+        borderLayer.lineWidth = borderWidth
+
+        // Scroll view (needs layer for CI filters)
+        scrollView.wantsLayer = true
         scrollView.drawsBackground = false
         scrollView.borderType = .noBorder
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
-        scrollView.autoresizingMask = [.width, .height]
 
+        // Grid
         verticalStackView.orientation = .vertical
-        verticalStackView.alignment = .leading
+        verticalStackView.alignment = .centerX
         verticalStackView.distribution = .fillEqually
         verticalStackView.spacing = gridSpacing
         verticalStackView.edgeInsets = contentInsets
         verticalStackView.translatesAutoresizingMaskIntoConstraints = true
 
         scrollView.documentView = verticalStackView
+        visualEffectView.addSubview(tintView)
         visualEffectView.addSubview(scrollView)
+        containerView.addSubview(visualEffectView)
+        containerView.layer?.addSublayer(borderLayer)
 
-        panel.contentView = visualEffectView
+        // The panel's contentView needs a layer for masking
+        let hostView = NSView()
+        hostView.wantsLayer = true
+        hostView.layer?.masksToBounds = true
+        hostView.addSubview(containerView)
+        panel.contentView = hostView
+    }
+
+    private func updateBorderPath() {
+        let bounds = CGRect(origin: .zero, size: targetFrame.size)
+        let cr = cornerRadius
+        let inset = borderWidth / 2
+
+        let path = CGMutablePath()
+        // Full rounded rectangle border (all four corners)
+        path.addRoundedRect(in: bounds.insetBy(dx: inset, dy: inset),
+                            cornerWidth: cr, cornerHeight: cr)
+        borderLayer.path = path
     }
 
     // MARK: - Grid Layout
@@ -177,27 +311,15 @@ final class NotchDropdownPanel: NSObject {
             let rowStackView = NSStackView()
             rowStackView.orientation = .horizontal
             rowStackView.alignment = .centerY
-            rowStackView.distribution = .fillEqually
+            rowStackView.distribution = .fill
             rowStackView.spacing = gridSpacing
 
             for item in rowItems {
                 rowStackView.addArrangedSubview(makeButton(for: item))
             }
 
-            if rowItems.count < columns {
-                for _ in rowItems.count ..< columns {
-                    let spacer = NSView(frame: NSRect(origin: .zero, size: cellSize))
-                    spacer.translatesAutoresizingMaskIntoConstraints = false
-                    spacer.widthAnchor.constraint(equalToConstant: cellSize.width).isActive = true
-                    spacer.heightAnchor.constraint(equalToConstant: cellSize.height).isActive = true
-                    rowStackView.addArrangedSubview(spacer)
-                }
-            }
-
             verticalStackView.addArrangedSubview(rowStackView)
         }
-
-        applyMaskImage()
     }
 
     private func makeButton(for item: HiddenItemInfo) -> NSButton {
@@ -210,7 +332,7 @@ final class NotchDropdownPanel: NSObject {
         button.toolTip = item.name
         button.target = self
         button.action = #selector(itemButtonPressed(_:))
-        button.hoverColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.2)
+        button.hoverColor = NSColor.white.withAlphaComponent(0.1)
         button.itemInfo = item
         button.widthAnchor.constraint(equalToConstant: cellSize.width).isActive = true
         button.heightAnchor.constraint(equalToConstant: cellSize.height).isActive = true
@@ -224,12 +346,18 @@ final class NotchDropdownPanel: NSObject {
 
     private func contentSize() -> NSSize {
         let fittingSize = verticalStackView.fittingSize
-        let width = fittingSize.width
+        let width = notchWidth
         let height = min(fittingSize.height, maxScrollHeight)
         scrollView.hasVerticalScroller = fittingSize.height > maxScrollHeight || rowCount() > maxVisibleRows
         verticalStackView.setFrameSize(NSSize(width: width, height: fittingSize.height))
-        visualEffectView.frame = NSRect(origin: .zero, size: NSSize(width: width, height: height))
-        scrollView.frame = visualEffectView.bounds
+
+        // Center each row horizontally within the full notch width
+        for row in verticalStackView.arrangedSubviews {
+            let rowWidth = row.fittingSize.width
+            let xOffset = round((width - rowWidth) / 2)
+            row.frame.origin.x = xOffset
+        }
+
         return NSSize(width: width, height: height)
     }
 
@@ -237,142 +365,95 @@ final class NotchDropdownPanel: NSObject {
         verticalStackView.arrangedSubviews.count
     }
 
-    private func frame(forContentSize size: NSSize, below notchRect: CGRect) -> CGRect {
-        let width = size.width
-        let height = size.height
-        return CGRect(
-            x: round(notchRect.midX - (width / 2)),
-            y: round(notchRect.minY - height),
-            width: width,
-            height: height
-        )
-    }
-
     private func maxColumns(for notchWidth: CGFloat) -> Int {
         let usableWidth = max(notchWidth - contentInsets.left - contentInsets.right, cellSize.width)
         return max(1, Int((usableWidth + gridSpacing) / (cellSize.width + gridSpacing)))
     }
 
-    // MARK: - Mask
-
-    private func applyMaskImage() {
-        let size = cellSize
-        let image = NSImage(size: size, flipped: false) { rect in
-            NSColor.clear.setFill()
-            rect.fill()
-
-            let path = NSBezierPath()
-            path.move(to: NSPoint(x: 0, y: rect.maxY))
-            path.line(to: NSPoint(x: 0, y: cornerRadius))
-            path.appendArc(
-                from: NSPoint(x: 0, y: 0),
-                to: NSPoint(x: cornerRadius, y: 0),
-                radius: cornerRadius
-            )
-            path.line(to: NSPoint(x: rect.maxX - cornerRadius, y: 0))
-            path.appendArc(
-                from: NSPoint(x: rect.maxX, y: 0),
-                to: NSPoint(x: rect.maxX, y: cornerRadius),
-                radius: cornerRadius
-            )
-            path.line(to: NSPoint(x: rect.maxX, y: rect.maxY))
-            path.close()
-
-            NSColor.black.setFill()
-            path.fill()
-            return true
-        }
-
-        image.capInsets = NSEdgeInsets(top: size.height - 1, left: cornerRadius, bottom: cornerRadius, right: cornerRadius)
-        image.resizingMode = .stretch
-        visualEffectView.maskImage = image
-    }
-
-    // MARK: - Animation
-
-    private func prepareForAnimation() -> UUID {
-        let token = UUID()
-        animationToken = token
-        syncVisualStateFromPresentationLayer()
-        visualEffectView.layer?.removeAllAnimations()
-        return token
-    }
-
-    private func syncVisualStateFromPresentationLayer() {
-        guard let presentation = visualEffectView.layer?.presentation(),
-              let layer = visualEffectView.layer else { return }
-        visualEffectView.alphaValue = CGFloat(presentation.opacity)
-        layer.transform = presentation.transform
-    }
-
-    private func animateShow(
-        token: UUID,
-        fromOpacity: Float,
-        fromTranslationY: CGFloat
-    ) {
-        panelState = .showing
-        visualEffectView.alphaValue = CGFloat(fromOpacity)
-        visualEffectView.layer?.transform = translationTransform(y: fromTranslationY)
-
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = showAnimationDuration
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            visualEffectView.animator().alphaValue = 1
-            visualEffectView.layer?.animator().transform = CATransform3DIdentity
-        } completionHandler: { [weak self] in
-            guard let self, self.animationToken == token else { return }
-            self.panelState = .visible
-            snugLog(" NotchDropdownPanel: state → visible")
-        }
-    }
-
-    private func animateHide(
-        token: UUID,
-        fromOpacity: Float,
-        fromTranslationY: CGFloat
-    ) {
-        panelState = .hiding
-        visualEffectView.alphaValue = CGFloat(fromOpacity)
-        visualEffectView.layer?.transform = translationTransform(y: fromTranslationY)
-
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = hideAnimationDuration
-            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
-            visualEffectView.animator().alphaValue = 0
-            visualEffectView.layer?.animator().transform = hiddenTransform
-        } completionHandler: { [weak self] in
-            guard let self, self.animationToken == token else { return }
-            self.completeHide()
-        }
-    }
+    // MARK: - Animation Helpers
 
     private func completeHide() {
+        panel.contentView?.layer?.mask = nil
         panel.orderOut(nil)
         panelState = .hidden
-        visualEffectView.alphaValue = 0
-        visualEffectView.layer?.transform = hiddenTransform
+        isActivated = false
+        filterRemovalToken = UUID()
+        scrollView.layer?.filters = nil
         snugLog(" NotchDropdownPanel: state → hidden")
-    }
-
-    private func currentOpacity(from layer: CALayer?) -> Float? {
-        layer?.opacity
-    }
-
-    private func currentTranslationY(from layer: CALayer?) -> CGFloat? {
-        guard let transform = layer?.transform else { return nil }
-        return CGFloat(transform.m42)
     }
 
     private var shouldAnimateTransitions: Bool {
         !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     }
 
-    private var hiddenTransform: CATransform3D {
-        translationTransform(y: hiddenYOffset)
+    // MARK: - Greyscale / Activation
+
+    private func applyGreyscale() {
+        isActivated = false
+        filterRemovalToken = UUID()
+        guard let filter = desaturateFilter else { return }
+        filter.setValue(0, forKey: kCIInputSaturationKey) // fully desaturated
+        filter.setValue(-0.05, forKey: kCIInputBrightnessKey) // slightly dimmer
+        scrollView.layer?.filters = [filter]
     }
 
-    private func translationTransform(y: CGFloat) -> CATransform3D {
-        CATransform3DMakeTranslation(0, y, 0)
+    private func setButtonHoverEnabled(_ enabled: Bool) {
+        for row in verticalStackView.arrangedSubviews {
+            guard let rowStack = row as? NSStackView else { continue }
+            for view in rowStack.arrangedSubviews {
+                (view as? HoverButton)?.hoverEnabled = enabled
+            }
+        }
+    }
+
+    private func removeGreyscale(animated: Bool) {
+        guard !isActivated else { return }
+        isActivated = true
+        setButtonHoverEnabled(true)
+
+        if !animated {
+            scrollView.layer?.filters = nil
+            return
+        }
+
+        // Animate saturation back to full colour
+        guard let filter = desaturateFilter else {
+            scrollView.layer?.filters = nil
+            return
+        }
+
+        // Transition: animate from 0 saturation to 1
+        let satAnim = CABasicAnimation(keyPath: "filters.colorControls.inputSaturation")
+        satAnim.fromValue = 0
+        satAnim.toValue = 1
+        satAnim.duration = 0.25
+        satAnim.timingFunction = CAMediaTimingFunction(name: .easeOut)
+
+        let brightAnim = CABasicAnimation(keyPath: "filters.colorControls.inputBrightness")
+        brightAnim.fromValue = -0.05
+        brightAnim.toValue = 0
+        brightAnim.duration = 0.25
+        brightAnim.timingFunction = CAMediaTimingFunction(name: .easeOut)
+
+        // Set final state
+        filter.setValue(1, forKey: kCIInputSaturationKey)
+        filter.setValue(0, forKey: kCIInputBrightnessKey)
+        scrollView.layer?.filters = [filter]
+
+        scrollView.layer?.add(satAnim, forKey: "saturationIn")
+        scrollView.layer?.add(brightAnim, forKey: "brightnessIn")
+
+        // Remove filter entirely after animation
+        let token = UUID()
+        filterRemovalToken = token
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self, self.filterRemovalToken == token else { return }
+            self.scrollView.layer?.filters = nil
+        }
+    }
+
+    @objc private func panelBecameKey() {
+        removeGreyscale(animated: true)
     }
 
     // MARK: - Actions
@@ -387,10 +468,17 @@ final class NotchDropdownPanel: NSObject {
 private final class PanelWindow: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    /// Allow the panel to extend into the menu bar / notch area.
+    /// macOS normally constrains windows to stay below the menu bar.
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+        frameRect
+    }
 }
 
 private final class HoverButton: NSButton {
     var hoverColor: NSColor = .clear
+    var hoverEnabled: Bool = false
     var itemInfo: HiddenItemInfo?
 
     private let backgroundView = NSView()
@@ -426,11 +514,12 @@ private final class HoverButton: NSButton {
     override func layout() {
         super.layout()
         backgroundView.frame = bounds
-        backgroundView.layer?.cornerRadius = 8
+        backgroundView.layer?.cornerRadius = 6
     }
 
     override func mouseEntered(with event: NSEvent) {
         super.mouseEntered(with: event)
+        guard hoverEnabled else { return }
         backgroundView.layer?.backgroundColor = hoverColor.cgColor
     }
 
@@ -444,9 +533,9 @@ private final class HoverButton: NSButton {
 
         backgroundView.wantsLayer = true
         backgroundView.layer?.backgroundColor = NSColor.clear.cgColor
-        backgroundView.layer?.cornerRadius = 8
+        backgroundView.layer?.cornerRadius = 6
         backgroundView.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(backgroundView, positioned: .below, relativeTo: imageView)
+        addSubview(backgroundView, positioned: .below, relativeTo: self.subviews.first)
 
         NSLayoutConstraint.activate([
             backgroundView.leadingAnchor.constraint(equalTo: leadingAnchor),
