@@ -35,6 +35,9 @@ class AccessibilityAndPolishIssueTests(unittest.TestCase):
                 r"autoHideTimer\?\.invalidate\(\)\s*"
                 r"autoHideTimer = nil\s*"
                 r".*?separatorItem\.length = collapseLength\s*"
+                r"if notchDropdownCoordinator == nil \{\s*"
+                r"setupNotchDropdown\(\)\s*"
+                r"\}\s*"
                 r"notchDropdownCoordinator\?\.update\(items: cachedHiddenItemInfo, notchRect: cachedNotchRect\)",
                 re.MULTILINE | re.DOTALL,
             ),

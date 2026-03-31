@@ -73,6 +73,9 @@ class StatusBarControllerIssueTests(unittest.TestCase):
             re.compile(
                 r"updateCollapseLength\(\)\s*"
                 r"separatorItem\.length = collapseLength\s*"
+                r"if notchDropdownCoordinator == nil \{\s*"
+                r"setupNotchDropdown\(\)\s*"
+                r"\}\s*"
                 r"notchDropdownCoordinator\?\.update\(items: cachedHiddenItemInfo, notchRect: cachedNotchRect\)\s*"
                 r"isToggling = false",
                 re.MULTILINE,
