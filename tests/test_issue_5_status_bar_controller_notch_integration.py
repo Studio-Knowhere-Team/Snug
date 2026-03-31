@@ -113,6 +113,39 @@ class StatusBarControllerIssueTests(unittest.TestCase):
             ),
         )
 
+    def test_expand_and_collapse_keep_coordinator_lifecycle_statements_in_required_order(self) -> None:
+        expand_match = re.search(
+            r"private func expandMenuBar\(\) \{(?P<body>.*?)\n    \}",
+            self.status_bar_text,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(expand_match)
+        expand_body = expand_match.group("body")
+        self.assertLess(
+            expand_body.index("notchDropdownCoordinator?.stop()"),
+            expand_body.index("notchDropdownCoordinator = nil"),
+        )
+        self.assertLess(
+            expand_body.index("notchDropdownCoordinator = nil"),
+            expand_body.index("separatorItem.length = NSStatusItem.variableLength"),
+        )
+
+        collapse_match = re.search(
+            r"private func collapseMenuBar\(\) \{(?P<body>.*?)\n    \}",
+            self.status_bar_text,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(collapse_match)
+        collapse_body = collapse_match.group("body")
+        self.assertLess(
+            collapse_body.index("if notchDropdownCoordinator == nil {"),
+            collapse_body.index("setupNotchDropdown()"),
+        )
+        self.assertLess(
+            collapse_body.index("setupNotchDropdown()"),
+            collapse_body.index("notchDropdownCoordinator?.update(items: cachedHiddenItemInfo, notchRect: cachedNotchRect)"),
+        )
+
     def test_context_menu_dismisses_panel_before_building_menu(self) -> None:
         self.assertRegex(
             self.status_bar_text,
