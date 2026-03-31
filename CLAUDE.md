@@ -2,7 +2,7 @@
 
 ## What This Is
 
-Snug is a macOS menu bar utility that hides and organizes menu bar icons. It uses a hidden NSStatusItem as a "separator pusher" to collapse icons off-screen, with optional auto-hide timers and accessibility-powered item interaction.
+Snug is a macOS menu bar utility that hides and organizes menu bar icons. It uses a hidden NSStatusItem as a "separator pusher" to collapse icons off-screen, with optional auto-hide timers, accessibility-powered item interaction, and a "Pocket" dropdown panel below the notch for accessing hidden items.
 
 ## Tech Stack
 
@@ -21,7 +21,9 @@ Snug/
 ├── AppDelegate.swift              # App lifecycle (@MainActor)
 ├── SnugApp.swift                  # @main entry point
 ├── StatusBar/
-│   └── StatusBarController.swift  # Core collapse/expand logic, icon rendering
+│   ├── StatusBarController.swift  # Core collapse/expand logic, icon rendering
+│   ├── NotchDropdownCoordinator.swift  # Pocket lifecycle: mouse tracking, dwell/grace timers
+│   └── NotchDropdownPanel.swift   # Pocket UI: blur panel, grid layout, show/hide animations
 ├── MenuBar/
 │   ├── MenuBarItem.swift          # Model: single menu bar item (struct, Sendable)
 │   ├── MenuBarItemManager.swift   # Discovers items via CGWindowList; 5s refresh
@@ -46,7 +48,13 @@ Snug/
     ├── Assets.xcassets/           # App icon
     └── Info.plist                 # Bundle metadata; dynamic version vars; Sparkle feed URL
 tests/
-└── test_issue_8_version_bump.py   # Python tests: version consistency across files
+├── test_issue_1_calculate_notch_rect.py     # Notch geometry method checks
+├── test_issue_2_notch_dropdown_panel.py     # Panel state machine and layout constants
+├── test_issue_3_panel_animations.py         # Animation durations (250ms show, 180ms hide)
+├── test_issue_4_notch_dropdown_coordinator.py  # Coordinator lifecycle and timer logic
+├── test_issue_5_status_bar_controller_notch_integration.py  # Separator/toggle + notch
+├── test_issue_6_accessibility_and_polish.py # AX permission prompts and fallbacks
+└── test_issue_8_version_bump.py             # Version consistency across files
 docs/
 └── appcast.xml                    # Sparkle update feed
 project.yml                        # XcodeGen config (source of truth for versions)
@@ -61,7 +69,10 @@ xcodegen generate -f project.yml
 # Build release
 xcodebuild -scheme Snug -configuration Release build
 
-# Run Python tests
+# Run all Python tests
+python3 -m unittest discover tests/
+
+# Run a specific test file
 python3 tests/test_issue_8_version_bump.py
 
 # View debug logs (DEBUG builds only)
@@ -115,3 +126,5 @@ When bumping versions, update `project.yml` and verify consistency — the Pytho
 - **Item discovery**: CGWindowList layer 25 (`kCGStatusWindowLevel`), filtered to windows > 2pt wide.
 - **Accessibility**: Optional; enables item name resolution and off-screen pressing. Three fallback levels.
 - **Auto-hide**: Timer (5s/10s/30s/1min) cancels on expand, restarts on collapse if enabled.
+- **Pocket (notch dropdown)**: When enabled, hovering the notch area reveals a `NotchDropdownPanel` (NSVisualEffectView blur + CAShapeLayer border, grid layout) managed by `NotchDropdownCoordinator`. Dwell timer (300ms) triggers show; grace delay (200ms) prevents accidental hide. Panel shows/hides with 250ms/180ms animations.
+- **`pocketEnabled`**: Persisted in `AppPreferences`; toggles Pocket feature on/off via `GeneralSettingsView`.

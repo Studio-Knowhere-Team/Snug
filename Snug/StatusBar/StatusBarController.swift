@@ -515,6 +515,9 @@ final class StatusBarController: NSObject {
         // Recalculate in case screen changed or initial value was stale.
         updateCollapseLength()
         separatorItem.length = collapseLength
+        if notchDropdownCoordinator == nil {
+            setupNotchDropdown()
+        }
         notchDropdownCoordinator?.update(items: cachedHiddenItemInfo, notchRect: cachedNotchRect)
         isToggling = false
 

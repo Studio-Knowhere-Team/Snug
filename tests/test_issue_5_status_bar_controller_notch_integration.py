@@ -73,11 +73,31 @@ class StatusBarControllerIssueTests(unittest.TestCase):
             re.compile(
                 r"updateCollapseLength\(\)\s*"
                 r"separatorItem\.length = collapseLength\s*"
+                r"if notchDropdownCoordinator == nil \{\s*"
+                r"setupNotchDropdown\(\)\s*"
+                r"\}\s*"
                 r"notchDropdownCoordinator\?\.update\(items: cachedHiddenItemInfo, notchRect: cachedNotchRect\)\s*"
                 r"isToggling = false",
                 re.MULTILINE,
             ),
         )
+        collapse_match = re.search(
+            r"private func collapseMenuBar\(\) \{(?P<body>.*?)\n    \}",
+            self.status_bar_text,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(collapse_match)
+        collapse_body = collapse_match.group("body")
+        self.assertEqual(collapse_body.count("setupNotchDropdown()"), 1)
+        recreate_window = re.search(
+            r"separatorItem\.length = collapseLength\s*(?P<section>.*?)notchDropdownCoordinator\?\.update",
+            collapse_body,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(recreate_window)
+        recreate_section = recreate_window.group("section")
+        self.assertNotIn("preferences.isPocketEnabled", recreate_section)
+        self.assertNotIn("guard hasNotch", recreate_section)
 
     def test_expand_menu_bar_stops_coordinator_before_revealing_items(self) -> None:
         self.assertRegex(
@@ -87,9 +107,43 @@ class StatusBarControllerIssueTests(unittest.TestCase):
                 r"isCollapsed = false\s*"
                 r"updateToggleIcon\(\)\s*"
                 r"notchDropdownCoordinator\?\.stop\(\)\s*"
+                r"notchDropdownCoordinator = nil\s*"
                 r".*?separatorItem\.length = NSStatusItem\.variableLength",
                 re.MULTILINE | re.DOTALL,
             ),
+        )
+
+    def test_expand_and_collapse_keep_coordinator_lifecycle_statements_in_required_order(self) -> None:
+        expand_match = re.search(
+            r"private func expandMenuBar\(\) \{(?P<body>.*?)\n    \}",
+            self.status_bar_text,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(expand_match)
+        expand_body = expand_match.group("body")
+        self.assertLess(
+            expand_body.index("notchDropdownCoordinator?.stop()"),
+            expand_body.index("notchDropdownCoordinator = nil"),
+        )
+        self.assertLess(
+            expand_body.index("notchDropdownCoordinator = nil"),
+            expand_body.index("separatorItem.length = NSStatusItem.variableLength"),
+        )
+
+        collapse_match = re.search(
+            r"private func collapseMenuBar\(\) \{(?P<body>.*?)\n    \}",
+            self.status_bar_text,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(collapse_match)
+        collapse_body = collapse_match.group("body")
+        self.assertLess(
+            collapse_body.index("if notchDropdownCoordinator == nil {"),
+            collapse_body.index("setupNotchDropdown()"),
+        )
+        self.assertLess(
+            collapse_body.index("setupNotchDropdown()"),
+            collapse_body.index("notchDropdownCoordinator?.update(items: cachedHiddenItemInfo, notchRect: cachedNotchRect)"),
         )
 
     def test_context_menu_dismisses_panel_before_building_menu(self) -> None:
@@ -174,6 +228,43 @@ class StatusBarControllerIssueTests(unittest.TestCase):
                 re.MULTILINE,
             ),
         )
+
+    def test_preference_changes_delegate_pocket_rebuild_and_teardown_to_setup_notch_dropdown(self) -> None:
+        self.assertRegex(
+            self.status_bar_text,
+            re.compile(
+                r"private func handlePreferencesChanged\(\) \{\s*"
+                r"if preferences\.isAutoHide \{\s*"
+                r"autoCollapseIfNeeded\(\)\s*"
+                r"\} else \{\s*"
+                r"autoHideTimer\?\.invalidate\(\)\s*"
+                r"autoHideTimer = nil\s*"
+                r"\}\s*"
+                r"// Re-evaluate pocket state when toggled\s*"
+                r"setupNotchDropdown\(\)\s*"
+                r"\}",
+                re.MULTILINE,
+            ),
+        )
+
+    def test_setup_notch_dropdown_cleans_up_existing_coordinator_before_returning_when_pocket_disabled(self) -> None:
+        setup_match = re.search(
+            r"private func setupNotchDropdown\(\) \{(?P<body>.*?)\n    \}",
+            self.status_bar_text,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(setup_match)
+        setup_body = setup_match.group("body")
+        self.assertIn("guard hasNotch, preferences.isPocketEnabled else {", setup_body)
+        disabled_guard = re.search(
+            r"guard hasNotch, preferences\.isPocketEnabled else \{\s*"
+            r"notchDropdownCoordinator\?\.stop\(\)\s*"
+            r"notchDropdownCoordinator = nil\s*"
+            r"return",
+            setup_body,
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(disabled_guard)
 
 
 if __name__ == "__main__":
