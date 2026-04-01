@@ -209,6 +209,7 @@ final class NotchDropdownCoordinator {
         cancelGraceHide()
         removeActiveMonitors()
         panel.hide(animated: animated)
+        trackingWindow?.orderFront(nil)
         cursorIsInPanelZone = false
         cursorIsInZone = false
         snugLog(" NotchDropdownCoordinator: panel dismissed (%@)", reason)
