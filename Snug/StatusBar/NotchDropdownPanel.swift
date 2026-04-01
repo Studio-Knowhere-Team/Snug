@@ -96,6 +96,17 @@ final class NotchDropdownPanel: NSObject {
             return
         }
 
+        // Force-complete any in-flight hide so the state machine is clean before
+        // we start a new show animation. Without this, hovering away then back
+        // quickly leaves panelState stuck in .hiding after the stale hide
+        // completion block skips completeHide() due to a mismatched token.
+        if panelState == .hiding {
+            panel.contentView?.layer?.mask = nil
+            panelState = .hidden
+            isActivated = false
+            snugLog(" NotchDropdownPanel.show: interrupted in-flight hide, reset to hidden")
+        }
+
         snugLog(" NotchDropdownPanel.show: items=%d, state=%@",
               items.count, "\(panelState)")
 
@@ -171,6 +182,16 @@ final class NotchDropdownPanel: NSObject {
 
     func hide(animated: Bool) {
         guard panelState != .hidden else { return }
+
+        // Force-complete any in-flight show so the state machine is clean before
+        // we start a new hide animation. Without this, hovering in then out
+        // quickly could leave a stale show completion block later promoting the
+        // state back to .visible after the panel has already hidden.
+        if panelState == .showing {
+            panel.contentView?.layer?.mask = nil
+            panelState = .visible
+            snugLog(" NotchDropdownPanel.hide: interrupted in-flight show, reset to visible")
+        }
 
         snugLog(" NotchDropdownPanel.hide: animated=%d, state=%@",
               animated ? 1 : 0, "\(panelState)")
