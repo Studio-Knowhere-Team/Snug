@@ -30,6 +30,8 @@ final class StatusBarController: NSObject {
 
     private let preferences: AppPreferences
     private var autoHideTimer: Timer?
+    private var startupRescanTimer: Timer?
+    private var startupRescanTicksRemaining: Int = 0
     private var isToggling = false
     private var isActivatingItem = false
 
@@ -164,6 +166,38 @@ final class StatusBarController: NSObject {
                   self.cachedHiddenItemInfo.map { $0.name }.joined(separator: ", "))
 
             self.collapseMenuBar()
+            self.startStartupRescan()
+        }
+    }
+
+    // MARK: - Startup Rescan
+
+    /// After login many apps load their status items several seconds after
+    /// Snug's initial collapse. Re-run discovery periodically for 30 s so
+    /// the badge count catches up as late-loading items appear.
+    private func startStartupRescan() {
+        startupRescanTimer?.invalidate()
+        startupRescanTicksRemaining = 6  // 6 × 5 s = 30 s
+        startupRescanTimer = Timer.scheduledTimer(
+            timeInterval: 5,
+            target: self,
+            selector: #selector(startupRescanTick),
+            userInfo: nil,
+            repeats: true
+        )
+    }
+
+    @objc private func startupRescanTick() {
+        startupRescanTicksRemaining -= 1
+        snugLog("startupRescan: tick (remaining=%d, isCollapsed=%d)",
+              startupRescanTicksRemaining, isCollapsed ? 1 : 0)
+        if isCollapsed {
+            postCollapseDiscovery()
+        }
+        if startupRescanTicksRemaining <= 0 {
+            startupRescanTimer?.invalidate()
+            startupRescanTimer = nil
+            snugLog("startupRescan: finished")
         }
     }
 
