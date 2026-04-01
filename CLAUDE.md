@@ -9,7 +9,7 @@ Snug is a macOS menu bar utility that hides and organizes menu bar icons. It use
 - **Language**: Swift 6.0, strict concurrency (`SWIFT_STRICT_CONCURRENCY: complete`)
 - **Deployment target**: macOS 14.0 (Sonoma)
 - **UI**: SwiftUI (preferences, onboarding) + AppKit (menu bar, status items)
-- **Frameworks**: Foundation, Combine, ApplicationServices (AX API), Quartz (CGWindowList)
+- **Frameworks**: Foundation, Combine, ApplicationServices (AX API), Quartz (CGWindowList), ServiceManagement (launch at login)
 - **Auto-update**: Sparkle (`SPUStandardUpdaterController`)
 - **Build system**: XcodeGen (`project.yml` → `Snug.xcodeproj`)
 - **Testing**: Python 3 `unittest` (source/config consistency checks)
@@ -54,7 +54,10 @@ tests/
 ├── test_issue_4_notch_dropdown_coordinator.py  # Coordinator lifecycle and timer logic
 ├── test_issue_5_status_bar_controller_notch_integration.py  # Separator/toggle + notch
 ├── test_issue_6_accessibility_and_polish.py # AX permission prompts and fallbacks
-└── test_issue_8_version_bump.py             # Version consistency across files
+├── test_issue_8_version_bump.py             # Version consistency across files
+├── test_issue_10_nil_coordinator_after_stop.py  # Coordinator nil-out after stop
+├── test_issue_14_pocket_toggle_app_storage.py   # Pocket toggle @Observable/@AppStorage binding
+└── test_issue_16_recreate_coordinator_on_collapse.py  # Coordinator recreation on collapse
 docs/
 └── appcast.xml                    # Sparkle update feed
 project.yml                        # XcodeGen config (source of truth for versions)
@@ -121,7 +124,7 @@ When bumping versions, update `project.yml` and verify consistency — the Pytho
 ## Key Architecture Notes
 
 - **Separator pusher**: The collapse mechanism sets an NSStatusItem's width to ~10000pt, pushing items left of it off-screen. Not a window overlay.
-- **Notch awareness**: Detects notch via `screen.safeAreaInsets.top > 0`; uses `auxiliaryTopRightArea` for safe boundary.
+- **Notch awareness**: Detects notch via `screen.safeAreaInsets.top > 0`; uses `auxiliaryTopLeftArea` and `auxiliaryTopRightArea` for safe boundaries.
 - **Multi-monitor**: Calculates min/max X across all `NSScreen.screens`.
 - **Item discovery**: CGWindowList layer 25 (`kCGStatusWindowLevel`), filtered to windows > 2pt wide.
 - **Accessibility**: Optional; enables item name resolution and off-screen pressing. Three fallback levels.

@@ -30,6 +30,8 @@ final class StatusBarController: NSObject {
 
     private let preferences: AppPreferences
     private var autoHideTimer: Timer?
+    private var startupRescanTimer: Timer?
+    private var startupRescanTicksRemaining: Int = 0
     private var isToggling = false
     private var isActivatingItem = false
 
@@ -164,6 +166,38 @@ final class StatusBarController: NSObject {
                   self.cachedHiddenItemInfo.map { $0.name }.joined(separator: ", "))
 
             self.collapseMenuBar()
+            self.startStartupRescan()
+        }
+    }
+
+    // MARK: - Startup Rescan
+
+    /// After login many apps load their status items several seconds after
+    /// Snug's initial collapse. Re-run discovery periodically for 30 s so
+    /// the badge count catches up as late-loading items appear.
+    private func startStartupRescan() {
+        startupRescanTimer?.invalidate()
+        startupRescanTicksRemaining = 6  // 6 × 5 s = 30 s
+        startupRescanTimer = Timer.scheduledTimer(
+            timeInterval: 5,
+            target: self,
+            selector: #selector(startupRescanTick),
+            userInfo: nil,
+            repeats: true
+        )
+    }
+
+    @objc private func startupRescanTick() {
+        startupRescanTicksRemaining -= 1
+        snugLog("startupRescan: tick (remaining=%d, isCollapsed=%d)",
+              startupRescanTicksRemaining, isCollapsed ? 1 : 0)
+        if isCollapsed {
+            postCollapseDiscovery()
+        }
+        if startupRescanTicksRemaining <= 0 {
+            startupRescanTimer?.invalidate()
+            startupRescanTimer = nil
+            snugLog("startupRescan: finished")
         }
     }
 
@@ -434,18 +468,11 @@ final class StatusBarController: NSObject {
 
     // MARK: - Toggle Icon
 
-    private static let lastHiddenCountKey = "lastHiddenItemCount"
-
-    /// Count of hidden items — same as what appears in the dropdown menu.
-    /// Falls back to the last known count (persisted across launches) when
-    /// AX hasn't resolved yet.
+    /// Count of hidden items for the badge. Prefers the AX-resolved count
+    /// (has names), falls back to the CGWindowList count (works without AX).
     private var hiddenItemCount: Int {
         let live = cachedHiddenItemInfo.count
-        if live > 0 {
-            UserDefaults.standard.set(live, forKey: Self.lastHiddenCountKey)
-            return live
-        }
-        return UserDefaults.standard.integer(forKey: Self.lastHiddenCountKey)
+        return live > 0 ? live : postCollapseItemCount
     }
 
     private func updateToggleIcon(animated: Bool = true) {
