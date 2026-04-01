@@ -21,6 +21,16 @@ Snug 20*/
 # Claude Code
 .claude/
 
+# Tests (Python consistency checks, not shipped)
+tests/
+
+# CI workflows
+.github/
+
+# Documentation (CLAUDE.md etc.)
+*.md
+!README.md
+
 # Misc
 *.swp
 *~
