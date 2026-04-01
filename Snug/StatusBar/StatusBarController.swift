@@ -468,18 +468,11 @@ final class StatusBarController: NSObject {
 
     // MARK: - Toggle Icon
 
-    private static let lastHiddenCountKey = "lastHiddenItemCount"
-
-    /// Count of hidden items — same as what appears in the dropdown menu.
-    /// Falls back to the last known count (persisted across launches) when
-    /// AX hasn't resolved yet.
+    /// Count of hidden items for the badge. Prefers the AX-resolved count
+    /// (has names), falls back to the CGWindowList count (works without AX).
     private var hiddenItemCount: Int {
         let live = cachedHiddenItemInfo.count
-        if live > 0 {
-            UserDefaults.standard.set(live, forKey: Self.lastHiddenCountKey)
-            return live
-        }
-        return UserDefaults.standard.integer(forKey: Self.lastHiddenCountKey)
+        return live > 0 ? live : postCollapseItemCount
     }
 
     private func updateToggleIcon(animated: Bool = true) {

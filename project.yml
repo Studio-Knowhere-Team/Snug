@@ -23,8 +23,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: Studio-Knowhere.Snug
         PRODUCT_NAME: Snug
-        MARKETING_VERSION: "1.1.1"
-        CURRENT_PROJECT_VERSION: "4"
+        MARKETING_VERSION: "1.1.2"
+        CURRENT_PROJECT_VERSION: "5"
         INFOPLIST_FILE: Snug/Info.plist
         CODE_SIGN_ENTITLEMENTS: Snug/Snug.entitlements
         DEVELOPMENT_TEAM: 5654UXUA3M

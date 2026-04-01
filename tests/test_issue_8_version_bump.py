@@ -15,10 +15,10 @@ class VersionBumpIssueTests(unittest.TestCase):
     def test_project_config_bumps_marketing_and_build_versions(self) -> None:
         project_text = PROJECT_YML.read_text(encoding="utf-8")
 
-        self.assertRegex(project_text, r'MARKETING_VERSION:\s*"1\.1\.1"')
-        self.assertRegex(project_text, r'CURRENT_PROJECT_VERSION:\s*"4"')
-        self.assertNotIn('MARKETING_VERSION: "1.0.1"', project_text)
-        self.assertNotIn('CURRENT_PROJECT_VERSION: "3"', project_text)
+        self.assertRegex(project_text, r'MARKETING_VERSION:\s*"1\.1\.2"')
+        self.assertRegex(project_text, r'CURRENT_PROJECT_VERSION:\s*"5"')
+        self.assertNotIn('MARKETING_VERSION: "1.1.1"', project_text)
+        self.assertNotIn('CURRENT_PROJECT_VERSION: "4"', project_text)
 
     def test_info_plist_uses_generated_version_variables(self) -> None:
         with INFO_PLIST.open("rb") as plist_file:

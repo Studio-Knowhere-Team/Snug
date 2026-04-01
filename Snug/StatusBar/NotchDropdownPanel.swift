@@ -267,6 +267,7 @@ final class NotchDropdownPanel: NSObject {
         verticalStackView.spacing = gridSpacing
         verticalStackView.edgeInsets = contentInsets
         verticalStackView.translatesAutoresizingMaskIntoConstraints = true
+        verticalStackView.setFrameSize(NSSize(width: 220, height: 24))
 
         scrollView.documentView = verticalStackView
         visualEffectView.addSubview(tintView)
@@ -334,8 +335,12 @@ final class NotchDropdownPanel: NSObject {
         button.action = #selector(itemButtonPressed(_:))
         button.hoverColor = NSColor.white.withAlphaComponent(0.1)
         button.itemInfo = item
-        button.widthAnchor.constraint(equalToConstant: cellSize.width).isActive = true
-        button.heightAnchor.constraint(equalToConstant: cellSize.height).isActive = true
+        let w = button.widthAnchor.constraint(equalToConstant: cellSize.width)
+        let h = button.heightAnchor.constraint(equalToConstant: cellSize.height)
+        w.priority = .defaultHigh
+        h.priority = .defaultHigh
+        w.isActive = true
+        h.isActive = true
 
         if let icon = item.icon?.scaled(to: iconSize) {
             button.image = icon
