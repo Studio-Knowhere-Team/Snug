@@ -32,6 +32,7 @@ final class StatusBarController: NSObject {
     private let shouldScheduleInitialSetupWork: Bool
     private var autoHideTimer: Timer?
     private var startupRescanTimer: Timer?
+    private var screenParametersChangedWorkItem: DispatchWorkItem?
     private var startupRescanTicksRemaining: Int = 0
     private var isToggling = false
     private var isActivatingItem = false
@@ -69,6 +70,7 @@ final class StatusBarController: NSObject {
 
 #if DEBUG
     private var debugPostCollapseDiscoveryCallCount: Int = 0
+    private var debugRefreshHiddenItemCacheCallCount: Int = 0
 #endif
 
     // MARK: - Computed Positions
@@ -706,6 +708,10 @@ final class StatusBarController: NSObject {
 
     /// Refresh hidden item caches after expand (items are at natural positions).
     private func refreshHiddenItemCache() {
+#if DEBUG
+        debugRefreshHiddenItemCacheCallCount += 1
+#endif
+
         itemManager.refreshItems()
         let hidden = itemsLeftOfSeparator()
         cachedNaturalPositions = hidden
@@ -978,7 +984,8 @@ final class StatusBarController: NSObject {
         updateCollapseLength()
         setupNotchDropdown()
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+        screenParametersChangedWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
             if self.isCollapsed {
                 self.notchDropdownCoordinator?.update(items: self.cachedHiddenItemInfo, notchRect: self.cachedNotchRect)
@@ -987,6 +994,8 @@ final class StatusBarController: NSObject {
                 self.refreshHiddenItemCache()
             }
         }
+        screenParametersChangedWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: workItem)
     }
 }
 
@@ -999,6 +1008,7 @@ extension StatusBarController {
         let cachedHiddenItemsCount: Int
         let cachedHiddenItemInfoCount: Int
         let postCollapseDiscoveryCallCount: Int
+        let refreshHiddenItemCacheCallCount: Int
         let startupRescanTimerIsActive: Bool
     }
 
@@ -1010,6 +1020,7 @@ extension StatusBarController {
             cachedHiddenItemsCount: cachedHiddenItems.count,
             cachedHiddenItemInfoCount: cachedHiddenItemInfo.count,
             postCollapseDiscoveryCallCount: debugPostCollapseDiscoveryCallCount,
+            refreshHiddenItemCacheCallCount: debugRefreshHiddenItemCacheCallCount,
             startupRescanTimerIsActive: startupRescanTimer != nil
         )
     }

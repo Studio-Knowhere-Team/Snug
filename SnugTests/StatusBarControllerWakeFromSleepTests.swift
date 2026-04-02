@@ -101,8 +101,48 @@ final class StatusBarControllerWakeFromSleepTests: XCTestCase {
 
         let snapshot = controller.debugSnapshot()
         XCTAssertTrue(snapshot.isCollapsed)
-        XCTAssertGreaterThanOrEqual(snapshot.postCollapseDiscoveryCallCount, 1)
+        XCTAssertEqual(snapshot.postCollapseDiscoveryCallCount, 1)
+        XCTAssertEqual(snapshot.refreshHiddenItemCacheCallCount, 0)
         XCTAssertFalse(snapshot.startupRescanTimerIsActive)
+        XCTAssertFalse(logContents().contains("startupRescan:"))
+    }
+
+    func testScreenParametersChangedWhenCollapsedDebouncesToLastCallback() async throws {
+        let controller = StatusBarController(scheduleInitialSetupWork: false)
+        controller.debugSetCollapsedState(true, separatorLength: 240)
+        controller.debugPrimeCaches()
+
+        for _ in 0..<5 {
+            controller.debugInvokeScreenParametersChanged()
+        }
+
+        try await wait(for: 0.9)
+
+        let snapshot = controller.debugSnapshot()
+        XCTAssertTrue(snapshot.isCollapsed)
+        XCTAssertEqual(snapshot.postCollapseDiscoveryCallCount, 1)
+        XCTAssertEqual(snapshot.refreshHiddenItemCacheCallCount, 0)
+        XCTAssertFalse(snapshot.startupRescanTimerIsActive)
+        XCTAssertFalse(logContents().contains("startupRescan:"))
+    }
+
+    func testScreenParametersChangedWhenExpandedDebouncesToSingleRefresh() async throws {
+        let controller = StatusBarController(scheduleInitialSetupWork: false)
+        controller.debugSetCollapsedState(false, separatorLength: NSStatusItem.variableLength)
+        controller.debugPrimeCaches()
+
+        for _ in 0..<5 {
+            controller.debugInvokeScreenParametersChanged()
+        }
+
+        try await wait(for: 0.4)
+
+        let snapshot = controller.debugSnapshot()
+        XCTAssertFalse(snapshot.isCollapsed)
+        XCTAssertEqual(snapshot.postCollapseDiscoveryCallCount, 0)
+        XCTAssertEqual(snapshot.refreshHiddenItemCacheCallCount, 1)
+        XCTAssertFalse(snapshot.startupRescanTimerIsActive)
+        XCTAssertFalse(logContents().contains("startupRescan:"))
     }
 
     private func wait(for seconds: TimeInterval) async throws {
