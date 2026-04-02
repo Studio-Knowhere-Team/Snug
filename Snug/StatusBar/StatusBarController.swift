@@ -29,6 +29,7 @@ final class StatusBarController: NSObject {
     // MARK: - State
 
     private let preferences: AppPreferences
+    private let shouldScheduleInitialSetupWork: Bool
     private var autoHideTimer: Timer?
     private var startupRescanTimer: Timer?
     private var startupRescanTicksRemaining: Int = 0
@@ -108,8 +109,9 @@ final class StatusBarController: NSObject {
 
     // MARK: - Init
 
-    init(preferences: AppPreferences = .shared) {
+    init(preferences: AppPreferences = .shared, scheduleInitialSetupWork: Bool = true) {
         self.preferences = preferences
+        self.shouldScheduleInitialSetupWork = scheduleInitialSetupWork
 
         // Creation order determines initial position (rightmost first).
         toggleItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -154,6 +156,8 @@ final class StatusBarController: NSObject {
             name: NSWorkspace.didWakeNotification,
             object: nil
         )
+
+        guard shouldScheduleInitialSetupWork else { return }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             guard let self else { return }
@@ -977,3 +981,60 @@ final class StatusBarController: NSObject {
         }
     }
 }
+
+#if DEBUG
+extension StatusBarController {
+    struct DebugSnapshot {
+        let isCollapsed: Bool
+        let separatorLength: CGFloat
+        let cachedNaturalPositionsCount: Int
+        let cachedHiddenItemsCount: Int
+        let cachedHiddenItemInfoCount: Int
+        let startupRescanTimerIsActive: Bool
+    }
+
+    func debugSnapshot() -> DebugSnapshot {
+        DebugSnapshot(
+            isCollapsed: isCollapsed,
+            separatorLength: separatorItem.length,
+            cachedNaturalPositionsCount: cachedNaturalPositions.count,
+            cachedHiddenItemsCount: cachedHiddenItems.count,
+            cachedHiddenItemInfoCount: cachedHiddenItemInfo.count,
+            startupRescanTimerIsActive: startupRescanTimer != nil
+        )
+    }
+
+    func debugSetCollapsedState(_ collapsed: Bool, separatorLength: CGFloat) {
+        isCollapsed = collapsed
+        separatorItem.length = separatorLength
+        updateToggleIcon()
+    }
+
+    func debugPrimeCaches() {
+        cachedNaturalPositions = [(windowID: 101, naturalX: 42)]
+        cachedHiddenItems = [
+            MenuBarItem(
+                windowID: 101,
+                frame: CGRect(x: 42, y: 0, width: 18, height: 18),
+                ownerPID: 123,
+                ownerName: "Example",
+                bundleID: "com.example.app",
+                title: "Example"
+            )
+        ]
+        cachedHiddenItemInfo = [
+            HiddenItemInfo(
+                name: "Example",
+                icon: nil,
+                frame: CGRect(x: 42, y: 0, width: 18, height: 18),
+                windowID: 101,
+                ownerPID: 123
+            )
+        ]
+    }
+
+    func debugInvokeWakeHandler() {
+        handleWakeFromSleep()
+    }
+}
+#endif
