@@ -26,29 +26,31 @@ Snug/
 ├── AppDelegate.swift              # NSApplicationDelegate, boots StatusBarController
 ├── SnugApp.swift                  # @main enum entry point
 ├── StatusBar/
-│   ├── StatusBarController.swift  # Core controller: item hiding, separator sizing
-│   ├── NotchDropdownCoordinator.swift  # Orchestrates dropdown panel show/hide
-│   └── NotchDropdownPanel.swift   # NSPanel subclass with CALayer animations
+│   ├── StatusBarController.swift  # Core controller: item hiding, separator sizing, wake recovery
+│   ├── NotchDropdownCoordinator.swift  # Orchestrates dropdown panel show/hide (two-phase hover)
+│   └── NotchDropdownPanel.swift   # NSPanel subclass with CALayer mask animations
 ├── MenuBar/
-│   ├── MenuBarItemManager.swift   # CGWindowList discovery (layer == 25)
-│   ├── MenuBarItem.swift          # Data model for a discovered item
-│   └── AccessibilityMenuBarHelper.swift  # Optional AX API for item names
+│   ├── MenuBarItemManager.swift   # CGWindowList discovery (layer == 25); refreshes every 5s
+│   ├── MenuBarItem.swift          # Identifiable struct: windowID, frame, ownerPID, bundleID, title
+│   └── AccessibilityMenuBarHelper.swift  # AX API: item lookup, press/activate, cmd+drag reorder
 ├── Preferences/
 │   ├── AppPreferences.swift       # @Observable singleton (UserDefaults-backed)
-│   ├── GeneralSettingsView.swift  # SwiftUI settings UI
-│   └── AboutSettingsView.swift    # SwiftUI about page
+│   ├── GeneralSettingsView.swift  # SwiftUI settings UI (login item, auto-hide, pocket toggle)
+│   └── AboutSettingsView.swift    # SwiftUI about page (version, Sparkle update button)
 ├── Onboarding/
-│   ├── OnboardingWindow.swift     # First-launch NSWindow wrapper
-│   └── OnboardingView.swift       # SwiftUI onboarding flow
+│   ├── OnboardingWindow.swift     # First-launch NSWindowController wrapper (480×360)
+│   └── OnboardingView.swift       # 3-step SwiftUI flow; polls AX permission every 1s on step 3
 ├── Models/
-│   └── AutoHideInterval.swift     # Enum: 5s/10s/30s/1min + display names
+│   └── AutoHideInterval.swift     # Enum: 5s/10s/30s/1min; raw value 2 reserved (removed 15s)
 ├── Utilities/
-│   ├── SnugLog.swift              # File logger → /tmp/snug-debug.log
-│   ├── UpdaterController.swift    # Sparkle SPUUpdater singleton
-│   └── SettingsOpener.swift       # Opens Settings window from AppKit context
+│   ├── SnugLog.swift              # File logger → /tmp/snug-debug.log (DEBUG only, GCD-serialised)
+│   ├── UpdaterController.swift    # Sparkle SPUUpdater singleton (@Observable)
+│   └── SettingsOpener.swift       # Opens Settings window (TabView: General + About, 420×480)
 └── Extensions/
-    ├── Bundle+Version.swift
-    └── NSImage+Scaled.swift
+    ├── Bundle+Version.swift       # releaseVersionNumber / buildVersionNumber helpers
+    └── NSImage+Scaled.swift       # scaled(to:) using modern drawing handler API
+SnugTests/
+└── StatusBarControllerWakeFromSleepTests.swift  # 6 async tests: wake/screen-change scenarios
 ```
 
 ---
@@ -64,13 +66,14 @@ xcodegen generate
 # Build from CLI
 xcodebuild build -scheme Snug
 
+# Run tests
+xcodebuild test -scheme SnugTests
+
 # Run debug log
 tail -f /tmp/snug-debug.log
 ```
 
-Open `Snug.xcodeproj` in Xcode and press `⌘R` for day-to-day development.
-
-There are no automated tests in this repo.
+Open `Snug.xcodeproj` in Xcode and press `⌘R` for day-to-day development. Tests are in `SnugTests/`; run with `⌘U` in Xcode or the command above.
 
 ---
 
@@ -113,5 +116,5 @@ SwiftUI views (`GeneralSettingsView`, `OnboardingView`) are hosted via `NSHostin
 - The "pocket" (hidden area) works by resizing the separator item to push items off-screen.
 - `NotchDropdownCoordinator` manages a transparent tracking `NSWindow` that detects hover; it must be torn down before showing the panel to avoid z-order races (see issue #59).
 - After the dropdown panel is dismissed, the tracking window must be re-ordered to front (see issue #60).
-- Accessibility permission is optional — the app degrades gracefully without it (item names won't resolve).
+- Accessibility permission is optional — the app degrades gracefully without it (item names won't resolve, `pressItem()` / `moveItem()` won't work).
 - Distribution: DMG via GitHub Releases; Sparkle polls `docs/appcast.xml`.
