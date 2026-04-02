@@ -67,6 +67,10 @@ final class StatusBarController: NSObject {
     /// that were invisible at natural width on a notched display.
     private var postCollapseItemCount: Int = 0
 
+#if DEBUG
+    private var debugPostCollapseDiscoveryCallCount: Int = 0
+#endif
+
     // MARK: - Computed Positions
 
     /// The screen-space x of the separator item's left edge.
@@ -573,6 +577,10 @@ final class StatusBarController: NSObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             guard let self, self.isCollapsed else { return }
 
+#if DEBUG
+            self.debugPostCollapseDiscoveryCallCount += 1
+#endif
+
             self.itemManager.refreshItems()
             let allPushed = self.allItemsPushedBySeparator()
 
@@ -990,6 +998,7 @@ extension StatusBarController {
         let cachedNaturalPositionsCount: Int
         let cachedHiddenItemsCount: Int
         let cachedHiddenItemInfoCount: Int
+        let postCollapseDiscoveryCallCount: Int
         let startupRescanTimerIsActive: Bool
     }
 
@@ -1000,6 +1009,7 @@ extension StatusBarController {
             cachedNaturalPositionsCount: cachedNaturalPositions.count,
             cachedHiddenItemsCount: cachedHiddenItems.count,
             cachedHiddenItemInfoCount: cachedHiddenItemInfo.count,
+            postCollapseDiscoveryCallCount: debugPostCollapseDiscoveryCallCount,
             startupRescanTimerIsActive: startupRescanTimer != nil
         )
     }
@@ -1035,6 +1045,10 @@ extension StatusBarController {
 
     func debugInvokeWakeHandler() {
         handleWakeFromSleep()
+    }
+
+    func debugInvokeScreenParametersChanged() {
+        screenParametersChanged()
     }
 }
 #endif

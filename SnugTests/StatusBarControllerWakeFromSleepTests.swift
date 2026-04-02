@@ -90,6 +90,21 @@ final class StatusBarControllerWakeFromSleepTests: XCTestCase {
         XCTAssertFalse(logContents().contains("handleWakeFromSleep: re-collapsing with fresh AX data"))
     }
 
+    func testScreenParametersChangedWhenCollapsedRunsPostCollapseDiscoveryWithoutStartingStartupRescan() async throws {
+        let controller = StatusBarController(scheduleInitialSetupWork: false)
+        controller.debugSetCollapsedState(true, separatorLength: 240)
+        controller.debugPrimeCaches()
+
+        controller.debugInvokeScreenParametersChanged()
+
+        try await wait(for: 0.7)
+
+        let snapshot = controller.debugSnapshot()
+        XCTAssertTrue(snapshot.isCollapsed)
+        XCTAssertGreaterThanOrEqual(snapshot.postCollapseDiscoveryCallCount, 1)
+        XCTAssertFalse(snapshot.startupRescanTimerIsActive)
+    }
+
     private func wait(for seconds: TimeInterval) async throws {
         try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
