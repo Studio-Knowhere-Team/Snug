@@ -148,6 +148,13 @@ final class StatusBarController: NSObject {
             object: nil
         )
 
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(handleWakeFromSleep),
+            name: NSWorkspace.didWakeNotification,
+            object: nil
+        )
+
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             guard let self else { return }
             self.registerOwnWindowIDs()
@@ -919,6 +926,29 @@ final class StatusBarController: NSObject {
     }
 
     // MARK: - Screen Changes
+
+    @objc private func handleWakeFromSleep() {
+        guard isCollapsed else { return }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+            guard let self, self.isCollapsed else { return }
+
+            snugLog(" handleWakeFromSleep: expanding")
+            self.isCollapsed = false
+            self.updateToggleIcon()
+            self.separatorItem.length = NSStatusItem.variableLength
+            self.cachedNaturalPositions = []
+            self.cachedHiddenItems = []
+            self.cachedHiddenItemInfo = []
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                guard let self, !self.isCollapsed else { return }
+
+                snugLog(" handleWakeFromSleep: re-collapsing with fresh AX data")
+                self.collapseMenuBar()
+            }
+        }
+    }
 
     @objc private func screenParametersChanged() {
         notchDropdownCoordinator?.dismissPanel()
