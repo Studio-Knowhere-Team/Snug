@@ -551,8 +551,13 @@ final class StatusBarController: NSObject {
     /// find items that were invisible at natural width (behind the notch).
     /// Updates the hidden item count AND resolves info for newly discovered items
     /// so they appear in the right-click context menu.
+    ///
+    /// Rewritten in Step 6 to use structured concurrency so the per-app
+    /// AX scan can await its off-main worker without blocking the main
+    /// actor across the 0.3 s settle delay + the scan itself.
     private func postCollapseDiscovery() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(300))
             guard let self, self.isCollapsed else { return }
 
             self.itemManager.refreshItems()
@@ -612,7 +617,7 @@ final class StatusBarController: NSObject {
             let toggleX = self.toggleItem.button?.window?.frame.origin.x ?? CGFloat.greatestFiniteMagnitude
             let gap = max(0, allPushed.count - self.cachedHiddenItemInfo.count)
             if gap > 0 {
-                let byApp = AccessibilityMenuBarHelper.enumerateExtrasByRunningApps(leftOf: toggleX)
+                let byApp = await AccessibilityMenuBarHelper.enumerateExtrasByRunningApps(leftOf: toggleX)
                 let existingNamesNow = Set(self.cachedHiddenItemInfo.map { self.baseName(of: $0.name) })
                 let newFromApps = byApp.filter { !existingNamesNow.contains(self.baseName(of: $0.name)) }
                 let limited = Array(newFromApps.prefix(gap))

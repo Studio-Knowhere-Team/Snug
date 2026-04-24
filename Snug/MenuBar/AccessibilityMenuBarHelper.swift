@@ -179,6 +179,14 @@ enum AccessibilityMenuBarHelper {
 
     // MARK: - AX Hierarchy Enumeration
 
+    /// Pre-fetched app metadata for the off-main per-app AX scan.
+    /// Carries only Sendable value types so it can cross actor boundaries.
+    struct CandidateApp: Sendable {
+        let pid: pid_t
+        let name: String
+        let icon: NSImage?
+    }
+
     /// Enumerate status items by walking every running application and asking
     /// each one directly for its own `AXExtrasMenuBar` children.
     ///
@@ -190,25 +198,63 @@ enum AccessibilityMenuBarHelper {
     /// application, it returns its own status item(s) with the real PID and
     /// therefore the real app name.
     ///
-    /// Returns items filtered to those left of `separatorX` so we only report
-    /// items that would be hidden by the separator when collapsed.
-    static func enumerateExtrasByRunningApps(leftOf separatorX: CGFloat) -> [HiddenItemInfo] {
+    /// ## Concurrency (Step 6)
+    ///
+    /// The AX work (50–200 XPC round-trips per scan) runs on a detached
+    /// background task. Each call is given a **100 ms messaging timeout**
+    /// so one unresponsive app can't stall the whole scan — without this,
+    /// a beachballing Electron process could hang us for the AX global
+    /// timeout (~6 s). The main actor prepares the candidate list (so
+    /// `NSWorkspace` + `NSRunningApplication` access stays on main) and
+    /// then awaits the background worker.
+    static func enumerateExtrasByRunningApps(leftOf separatorX: CGFloat) async -> [HiddenItemInfo] {
         guard isGranted else { return [] }
 
         let ownPID = ProcessInfo.processInfo.processIdentifier
+        let candidates: [CandidateApp] = NSWorkspace.shared.runningApplications
+            .compactMap { app in
+                guard app.processIdentifier != ownPID,
+                      app.activationPolicy != .prohibited
+                else { return nil }
+                return CandidateApp(
+                    pid: app.processIdentifier,
+                    name: app.localizedName ?? "Unknown",
+                    icon: app.icon?.scaled(to: NSSize(width: 16, height: 16))
+                )
+            }
+
+        // Snapshot the system-widget filter as a Sendable value so the
+        // worker can read it from the detached task.
+        let widgets = systemWidgetNames
+
+        return await Task.detached(priority: .userInitiated) {
+            walkExtrasByApp(
+                separatorX: separatorX,
+                candidates: candidates,
+                systemWidgetNames: widgets
+            )
+        }.value
+    }
+
+    /// Off-main worker for the per-app `AXExtrasMenuBar` scan. Called only
+    /// from `enumerateExtrasByRunningApps` — extracted so the AX walk runs
+    /// on a background queue without dragging in main-actor dependencies.
+    nonisolated private static func walkExtrasByApp(
+        separatorX: CGFloat,
+        candidates: [CandidateApp],
+        systemWidgetNames: Set<String>
+    ) -> [HiddenItemInfo] {
         var seen: [String: (icon: NSImage?, frame: CGRect, ownerPID: pid_t)] = [:]
         var counts: [String: Int] = [:]
 
-        // Only accessory/regular apps can own status items; agents can't.
-        // Skipping prohibited apps cuts the enumeration cost substantially.
-        let candidates = NSWorkspace.shared.runningApplications.filter { app in
-            app.processIdentifier != ownPID &&
-                app.activationPolicy != .prohibited
-        }
+        for candidate in candidates {
+            let axApp = AXUIElementCreateApplication(candidate.pid)
 
-        for app in candidates {
-            let pid = app.processIdentifier
-            let axApp = AXUIElementCreateApplication(pid)
+            // Mandatory: without a per-app timeout, a single wedged target
+            // (unresponsive Electron process, crashed background agent)
+            // blocks us for the AX global default (~6 s). 100 ms is enough
+            // for responsive apps and cheap enough to retry 200 times.
+            AXUIElementSetMessagingTimeout(axApp, 0.1)
 
             var extrasBarValue: AnyObject?
             let barResult = AXUIElementCopyAttributeValue(
@@ -242,7 +288,7 @@ enum AccessibilityMenuBarHelper {
                 // because those are the very items we need this path to catch.
                 if frame.width > 0 && frame.midX >= separatorX { continue }
 
-                let name = app.localizedName ?? "Unknown"
+                let name = candidate.name
 
                 // Skip system widgets and Control Centre itself (shouldn't
                 // appear here given we're querying the owning app directly,
@@ -252,8 +298,7 @@ enum AccessibilityMenuBarHelper {
 
                 counts[name, default: 0] += 1
                 if seen[name] == nil {
-                    let icon = app.icon?.scaled(to: NSSize(width: 16, height: 16))
-                    seen[name] = (icon: icon, frame: frame, ownerPID: pid)
+                    seen[name] = (icon: candidate.icon, frame: frame, ownerPID: candidate.pid)
                 }
             }
         }
@@ -337,7 +382,11 @@ enum AccessibilityMenuBarHelper {
     }
 
     /// Read the screen frame of an AX element via its position + size attributes.
-    private static func axFrame(of element: AXUIElement) -> CGRect {
+    ///
+    /// `nonisolated` so the off-main per-app scan (Step 6) can call it from
+    /// a detached task without hopping to the main actor. The underlying
+    /// `AXUIElementCopyAttributeValue` is thread-safe at the element level.
+    nonisolated private static func axFrame(of element: AXUIElement) -> CGRect {
         var posValue: AnyObject?
         var sizeValue: AnyObject?
         AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &posValue)
@@ -441,7 +490,7 @@ enum AccessibilityMenuBarHelper {
         return true
     }
 
-    private static func axStringAttribute(_ element: AXUIElement, _ attribute: String) -> String? {
+    nonisolated private static func axStringAttribute(_ element: AXUIElement, _ attribute: String) -> String? {
         var value: AnyObject?
         let result = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
         guard result == .success else { return nil }

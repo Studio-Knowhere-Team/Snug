@@ -36,6 +36,14 @@ final class MenuBarItemManager {
     // MARK: - Discovery
 
     /// Enumerate all status bar items currently in the menu bar.
+    ///
+    /// Uses `.optionAll` deliberately: items pushed off-screen by the
+    /// collapse separator live at extreme negative X (outside any
+    /// display's bounds) and `.optionOnScreenOnly` would drop them on
+    /// some macOS versions, breaking post-collapse discovery. The marginal
+    /// cost (`~3–8 ms` with a typical window count) is acceptable at our
+    /// call cadence — which, post Step 4, is event-driven rather than 5 s
+    /// polling.
     func refreshItems() {
         guard let windowList = CGWindowListCopyWindowInfo(
             [.optionAll, .excludeDesktopElements],
