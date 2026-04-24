@@ -41,3 +41,38 @@ targets:
           CODE_SIGN_IDENTITY: "Developer ID Application"
           CODE_SIGN_STYLE: Manual
           ENABLE_HARDENED_RUNTIME: true
+
+  SnugTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - SnugTests
+    dependencies:
+      - target: Snug
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: Studio-Knowhere.SnugTests
+        GENERATE_INFOPLIST_FILE: true
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        DEVELOPMENT_TEAM: 5654UXUA3M
+      configs:
+        Debug:
+          CODE_SIGN_IDENTITY: "Apple Development"
+          CODE_SIGN_STYLE: Automatic
+
+schemes:
+  Snug:
+    build:
+      targets:
+        Snug: all
+        SnugTests: [test]
+    test:
+      targets:
+        - SnugTests
+      gatherCoverageData: false
+    run:
+      config: Debug
+    archive:
+      config: Release
