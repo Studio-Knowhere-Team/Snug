@@ -929,79 +929,145 @@ final class StatusBarController: NSObject {
         activateHiddenItem(info)
     }
 
+    /// Open a hidden item's own menu by expanding the bar, dragging the
+    /// item next to the separator (if needed), and `AXPress`ing it.
+    ///
+    /// Rewritten in Step 7 from nested `DispatchQueue.asyncAfter` callbacks
+    /// with hard-coded 400 ms and 300 ms delays to structured concurrency
+    /// with polling waits and a 3-attempt `AXPress` retry. The old hard-
+    /// coded delays caused the `AXPress result=-25204` (stale element)
+    /// failures seen in production logs on Flux: the press fired before
+    /// the AX tree had caught up with the post-drag window position.
     func activateHiddenItem(_ info: HiddenItemInfo) {
         guard !isActivatingItem else { return }
         isActivatingItem = true
 
-        snugLog(" activateHiddenItem: '%@' ownerPID=%d", info.name, info.ownerPID)
-
-        // Expand to natural width — items must be on-screen for Cmd+drag.
-        separatorItem.length = NSStatusItem.variableLength
-        isCollapsed = false
-        updateToggleIcon()
-
-        // After expansion settles, move the item next to the separator then press it.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+        Task { @MainActor [weak self] in
             guard let self else { return }
+            defer {
+                self.isActivatingItem = false
+                self.autoCollapseIfNeeded()
+            }
+
+            snugLog(" activateHiddenItem: '%@' ownerPID=%d", info.name, info.ownerPID)
+
+            // Expand to natural width — items must be on-screen for Cmd+drag.
+            self.separatorItem.length = NSStatusItem.variableLength
+            self.isCollapsed = false
+            self.updateToggleIcon()
+
+            // Wait for the item's natural-width X to settle (two consecutive
+            // reads within 1 px, up to 600 ms). Replaces the old blind 400 ms
+            // delay — some apps reach their natural position in ~100 ms on
+            // fast hardware, while slower apps took longer than 400 ms and
+            // caused stale-element press failures.
+            await self.pollUntilStable(windowID: info.windowID, timeoutMillis: 600)
 
             self.itemManager.refreshItems()
             let freshFrame = self.itemManager.items
                 .first(where: { $0.windowID == info.windowID })?.frame ?? info.frame
 
-            // Target: just to the left of the separator (which is just left of our toggle).
             let sepX = self.separatorOriginX
-            let targetX = sepX - 10  // a few px left of separator
-
-            // Menu bar Y in Quartz coords (top-left origin, typically ~12).
+            let targetX = sepX - 10
             let menuBarY = freshFrame.midY
 
             snugLog(" activateHiddenItem: item at x=%.0f, separator at x=%.0f, target x=%.0f",
                   freshFrame.midX, sepX, targetX)
 
-            // Only drag if the item isn't already next to the separator.
             if abs(freshFrame.midX - targetX) > 30 {
-                // Dispatch the Cmd+drag on a background thread so the usleep
-                // calls don't block the main run loop.
-                DispatchQueue.global(qos: .userInteractive).async {
-                    let moved = AccessibilityMenuBarHelper.moveItem(
+                // Run the Cmd+drag (which uses usleep internally) on a
+                // background task so the main actor isn't blocked.
+                let moved = await Task.detached(priority: .userInitiated) {
+                    AccessibilityMenuBarHelper.moveItem(
                         from: freshFrame.midX,
                         to: targetX,
                         menuBarY: menuBarY
                     )
-                    snugLog(" activateHiddenItem: moveItem=%d", moved ? 1 : 0)
+                }.value
+                snugLog(" activateHiddenItem: moveItem=%d", moved ? 1 : 0)
 
-                    // Back to main thread to press and collapse.
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                        guard let self else { return }
-                        // Re-fetch position after the move.
-                        self.itemManager.refreshItems()
-                        let movedFrame = self.itemManager.items
-                            .first(where: { $0.windowID == info.windowID })?.frame ?? freshFrame
+                // Wait for the item to arrive at targetX (±5 px), up to
+                // 600 ms. Replaces the old blind 300 ms delay; on Flux,
+                // which triggered the -25204 failure, the item occasionally
+                // needed >300 ms to settle after the drag.
+                await self.pollUntilNear(
+                    windowID: info.windowID,
+                    targetX: targetX,
+                    toleranceX: 5,
+                    timeoutMillis: 600
+                )
+            }
 
-                        let pressed = AccessibilityMenuBarHelper.pressItem(
-                            named: info.name,
-                            ownerPID: info.ownerPID,
-                            fallbackFrame: movedFrame
-                        )
-                        if !pressed {
-                            snugLog(" activateHiddenItem: AXPress failed for '%@'", info.name)
-                        }
-                        self.isActivatingItem = false
-                        self.autoCollapseIfNeeded()
-                    }
-                }
-            } else {
-                // Already close enough — just press it.
-                let pressed = AccessibilityMenuBarHelper.pressItem(
+            // Re-resolve frame once more so `pressItem`'s position fallback
+            // uses the post-drag location.
+            self.itemManager.refreshItems()
+            let pressFrame = self.itemManager.items
+                .first(where: { $0.windowID == info.windowID })?.frame ?? freshFrame
+
+            // Press with retry. `AXUIElementPerformAction` returns
+            // kAXErrorInvalidUIElement (-25204) when the element has been
+            // invalidated mid-scene (a common outcome of Control Centre's
+            // replicant re-creation after our drag). Retrying gives the
+            // AX tree a chance to catch up; findExtraByPID is re-run
+            // inside pressItem each attempt.
+            var pressed = false
+            for attempt in 0..<3 {
+                pressed = AccessibilityMenuBarHelper.pressItem(
                     named: info.name,
                     ownerPID: info.ownerPID,
-                    fallbackFrame: freshFrame
+                    fallbackFrame: pressFrame
                 )
-                if !pressed {
-                    snugLog(" activateHiddenItem: AXPress failed for '%@'", info.name)
+                if pressed { break }
+                if attempt < 2 {
+                    try? await Task.sleep(for: .milliseconds(50))
                 }
-                self.isActivatingItem = false
-                self.autoCollapseIfNeeded()
+            }
+            if !pressed {
+                snugLog(" activateHiddenItem: AXPress failed after 3 attempts for '%@'",
+                      info.name)
+            }
+        }
+    }
+
+    /// Poll `itemManager` every 50 ms until the given window's X position
+    /// is the same for two consecutive reads (within 1 px), or the timeout
+    /// elapses. Returns early once stable — doesn't burn the full budget
+    /// when the item has already settled.
+    private func pollUntilStable(windowID: CGWindowID, timeoutMillis: Int) async {
+        let steps = max(1, timeoutMillis / 50)
+        var lastX: CGFloat? = nil
+        var stableReads = 0
+        for _ in 0..<steps {
+            try? await Task.sleep(for: .milliseconds(50))
+            itemManager.refreshItems()
+            let currentX = itemManager.items
+                .first(where: { $0.windowID == windowID })?.frame.midX
+            if let currentX, let last = lastX, abs(currentX - last) < 1 {
+                stableReads += 1
+                if stableReads >= 2 { return }
+            } else {
+                stableReads = 0
+            }
+            lastX = currentX
+        }
+    }
+
+    /// Poll `itemManager` every 50 ms until the given window's X position
+    /// is within `toleranceX` of `targetX`, or the timeout elapses.
+    private func pollUntilNear(
+        windowID: CGWindowID,
+        targetX: CGFloat,
+        toleranceX: CGFloat,
+        timeoutMillis: Int
+    ) async {
+        let steps = max(1, timeoutMillis / 50)
+        for _ in 0..<steps {
+            try? await Task.sleep(for: .milliseconds(50))
+            itemManager.refreshItems()
+            if let currentX = itemManager.items
+                .first(where: { $0.windowID == windowID })?.frame.midX,
+               abs(currentX - targetX) < toleranceX {
+                return
             }
         }
     }
