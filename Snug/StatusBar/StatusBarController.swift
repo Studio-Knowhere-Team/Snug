@@ -55,6 +55,20 @@ final class StatusBarController: NSObject {
     /// that were invisible at natural width on a notched display.
     private var postCollapseItemCount: Int = 0
 
+    // MARK: - Snapshot (Step 1 of refactor)
+    //
+    // Shadow of the legacy `cached*` fields. Populated on expand via
+    // `synthesizeSnapshotAfterExpand()`; not yet read by any consumer
+    // (that's Step 3). Carries a sticky `resolvedNames` ledger so behind-
+    // notch names survive screen changes and natural-width scans.
+    //
+    // INVARIANT (see MenuBarSnapshot doc): `totalCount` must reflect a
+    // stable reading, never a single transient value. This is not yet
+    // enforced by a write gate (that's Step 2); for now we seed it from
+    // `postCollapseItemCount` which carries the legacy behaviour.
+
+    private(set) var currentSnapshot: MenuBarSnapshot = .empty
+
     // MARK: - Computed Positions
 
     /// The screen-space x of the separator item's left edge.
@@ -664,6 +678,43 @@ final class StatusBarController: NSObject {
             .sorted { $0.name < $1.name }
         snugLog(" refreshHiddenItemCache: hidden=%d, resolved=%d",
               hidden.count, cachedHiddenItemInfo.count)
+
+        synthesizeSnapshot(width: .natural)
+    }
+
+    /// Rebuild `currentSnapshot` from the legacy `cached*` fields.
+    ///
+    /// Called on every expand refresh (Step 1) and — once Step 2 lands —
+    /// after every post-collapse discovery. Seeds `resolvedNames` from the
+    /// prior snapshot so names for items missing in this scan (e.g. behind
+    /// the notch when we're at natural width) survive in the ledger.
+    ///
+    /// Kept as a single private method so the struct's invariants live in
+    /// one place; future refactor steps will replace `cached*` reads with
+    /// `currentSnapshot` reads without changing this assembly logic.
+    private func synthesizeSnapshot(width: MenuBarSnapshot.Width) {
+        var positions: [MenuBarSnapshot.StableKey: CGFloat] = [:]
+        for (windowID, naturalX) in cachedNaturalPositions {
+            if let item = cachedHiddenItems.first(where: { $0.windowID == windowID }) {
+                let key = MenuBarSnapshot.StableKey(ownerPID: item.ownerPID)
+                positions[key] = naturalX
+            }
+        }
+
+        var names = currentSnapshot.resolvedNames
+        for info in cachedHiddenItemInfo {
+            let key = MenuBarSnapshot.StableKey(ownerPID: info.ownerPID)
+            names[key] = info.name
+        }
+
+        currentSnapshot = MenuBarSnapshot(
+            items: cachedHiddenItemInfo,
+            totalCount: max(cachedHiddenItemInfo.count, postCollapseItemCount),
+            naturalPositions: positions,
+            resolvedNames: names,
+            capturedAt: Date(),
+            capturedWidth: width
+        )
     }
 
     // MARK: - Auto-Collapse Timer
