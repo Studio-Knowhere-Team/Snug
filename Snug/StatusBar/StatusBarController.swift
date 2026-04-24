@@ -164,6 +164,7 @@ final class StatusBarController: NSObject {
             snugLog(" setup: resolved %d items at natural width: %@",
                   self.cachedHiddenItemInfo.count,
                   self.cachedHiddenItemInfo.map { $0.name }.joined(separator: ", "))
+            self.synthesizeSnapshot(width: .natural)
 
             self.collapseMenuBar()
             self.startStartupRescan()
@@ -456,6 +457,11 @@ final class StatusBarController: NSObject {
                   cachedHiddenItemInfo.map { $0.name }.joined(separator: ", "))
         }
 
+        // Capture the snapshot now — items are still at natural width, so
+        // resolvedNames picked up this cycle won't be replaced by a later
+        // post-collapse scan that only sees Control-Centre-owned windows.
+        synthesizeSnapshot(width: .natural)
+
         isCollapsed = true
         updateToggleIcon()
 
@@ -578,6 +584,9 @@ final class StatusBarController: NSObject {
                       namesAfter.count, namesAfter.joined(separator: ", "))
             }
 
+            // Atomically replace the snapshot with the post-collapse state.
+            self.synthesizeSnapshot(width: .collapsed)
+
             // Refresh the icon if the count may have changed.
             self.updateToggleIcon()
         }
@@ -684,14 +693,16 @@ final class StatusBarController: NSObject {
 
     /// Rebuild `currentSnapshot` from the legacy `cached*` fields.
     ///
-    /// Called on every expand refresh (Step 1) and — once Step 2 lands —
-    /// after every post-collapse discovery. Seeds `resolvedNames` from the
-    /// prior snapshot so names for items missing in this scan (e.g. behind
-    /// the notch when we're at natural width) survive in the ledger.
+    /// Called from every site that mutates the cached fields. Seeds
+    /// `resolvedNames` from the prior snapshot so names for items missing
+    /// in this scan (e.g. behind the notch when we're at natural width)
+    /// survive in the ledger.
     ///
-    /// Kept as a single private method so the struct's invariants live in
-    /// one place; future refactor steps will replace `cached*` reads with
-    /// `currentSnapshot` reads without changing this assembly logic.
+    /// INVARIANT (enforced by DEBUG assertions): after this call returns,
+    /// `currentSnapshot.items.count == cachedHiddenItemInfo.count` and
+    /// `currentSnapshot.totalCount >= cachedHiddenItemInfo.count`. If any
+    /// of these fail in a DEBUG build, a mutation path updated a cached
+    /// field without calling synthesizeSnapshot afterward.
     private func synthesizeSnapshot(width: MenuBarSnapshot.Width) {
         var positions: [MenuBarSnapshot.StableKey: CGFloat] = [:]
         for (windowID, naturalX) in cachedNaturalPositions {
@@ -715,6 +726,23 @@ final class StatusBarController: NSObject {
             capturedAt: Date(),
             capturedWidth: width
         )
+
+        #if DEBUG
+        assert(
+            currentSnapshot.items.count == cachedHiddenItemInfo.count,
+            "snapshot/legacy divergence on items.count: snapshot=\(currentSnapshot.items.count) legacy=\(cachedHiddenItemInfo.count)"
+        )
+        assert(
+            currentSnapshot.totalCount >= cachedHiddenItemInfo.count,
+            "snapshot totalCount (\(currentSnapshot.totalCount)) must be >= items.count (\(cachedHiddenItemInfo.count))"
+        )
+        if postCollapseItemCount > 0 {
+            assert(
+                currentSnapshot.totalCount >= postCollapseItemCount,
+                "snapshot totalCount (\(currentSnapshot.totalCount)) must carry postCollapseItemCount (\(postCollapseItemCount))"
+            )
+        }
+        #endif
     }
 
     // MARK: - Auto-Collapse Timer
@@ -929,6 +957,7 @@ final class StatusBarController: NSObject {
         // right-click menu empty until the user manually expand/collapses.
         // Positions can still be stale, so only drop cachedNaturalPositions.
         cachedNaturalPositions = []
+        synthesizeSnapshot(width: isCollapsed ? .collapsed : .natural)
         isActivatingItem = false
         updateCollapseLength()
 
