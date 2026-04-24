@@ -13,13 +13,24 @@ final class MenuBarItemManager {
     var ownWindowIDs: Set<CGWindowID> = []
 
     private let myBundleID = Bundle.main.bundleIdentifier ?? ""
-    private var refreshTimer: Timer?
 
     /// Cache of PID → bundle identifier
     private var bundleIDCache: [pid_t: String] = [:]
 
     init() {
-        startPeriodicRefresh()
+        // Clear stale PID cache when screen configuration changes — the
+        // PIDs themselves don't change, but running-app state sometimes
+        // does on display events. Keep the observer here so the manager
+        // owns its cache lifecycle; the StatusBarController owns the
+        // refresh cadence (via NSWorkspace observers + heartbeat).
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.bundleIDCache.removeAll(keepingCapacity: true)
+            }
+        }
     }
 
     // MARK: - Discovery
@@ -98,27 +109,4 @@ final class MenuBarItemManager {
         return nil
     }
 
-    // MARK: - Periodic Refresh
-
-    private func startPeriodicRefresh() {
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.refreshItems()
-            }
-        }
-        // Allow macOS to coalesce timer wakeups for App Nap eligibility.
-        refreshTimer?.tolerance = 2.0
-
-        // Clear stale PID cache when screen configuration changes.
-        NotificationCenter.default.addObserver(
-            forName: NSApplication.didChangeScreenParametersNotification,
-            object: nil, queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in
-                self?.bundleIDCache.removeAll(keepingCapacity: true)
-            }
-        }
-    }
-
-    // refreshTimer lives for the app's lifetime; no deinit needed.
 }

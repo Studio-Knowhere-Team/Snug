@@ -34,6 +34,22 @@ final class StatusBarController: NSObject {
     private var isToggling = false
     private var isActivatingItem = false
 
+    /// Coalesces rapid `NSWorkspace` launch/terminate notifications into a
+    /// single refresh. Set on each event, cancelled on the next, and fired
+    /// when ~250 ms of quiet have elapsed. Using `DispatchWorkItem` rather
+    /// than `Timer` avoids `Timer.tolerance` batching, which is
+    /// counter-productive for a coalescer (we want predictable quiet-time).
+    private var workspaceCoalesce: DispatchWorkItem?
+
+    /// Long-interval heartbeat that runs `reconcile()` to catch categories
+    /// of state changes that NSWorkspace observers miss: LaunchAgents
+    /// already running at Snug startup (no launch notification will fire),
+    /// apps that lazily vend `AXExtrasMenuBar` children seconds after their
+    /// launch notification, and system services (e.g. VPN indicators) that
+    /// aren't apps. Fires on a 60 s tolerance-heavy schedule — silent
+    /// unless the reconciled state actually differs from the snapshot.
+    private var heartbeatTimer: Timer?
+
     /// Width used to push items off-screen (recalculated on screen changes)
     private var collapseLength: CGFloat = 10000
 
@@ -149,6 +165,37 @@ final class StatusBarController: NSObject {
             object: nil
         )
 
+        // Event-driven refresh: when an app launches or terminates with an
+        // activation policy that permits menu-bar extras, schedule a
+        // coalesced rediscovery. Replaces the old 5 s periodic
+        // `MenuBarItemManager.refreshItems` poll that ran forever.
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        workspaceCenter.addObserver(
+            self,
+            selector: #selector(workspaceAppLaunched(_:)),
+            name: NSWorkspace.didLaunchApplicationNotification,
+            object: nil
+        )
+        workspaceCenter.addObserver(
+            self,
+            selector: #selector(workspaceAppTerminated(_:)),
+            name: NSWorkspace.didTerminateApplicationNotification,
+            object: nil
+        )
+
+        // Safety-net heartbeat. 60 s is long enough that the steady-state
+        // cost is negligible and the coalesced tolerance lets macOS batch
+        // wakeups; short enough that a missed launch notification or a
+        // lazily-vended AX extra gets picked up within a minute.
+        let heartbeat = Timer.scheduledTimer(
+            withTimeInterval: 60,
+            repeats: true
+        ) { [weak self] _ in
+            Task { @MainActor in self?.reconcile() }
+        }
+        heartbeat.tolerance = 10
+        heartbeatTimer = heartbeat
+
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             guard let self else { return }
             self.registerOwnWindowIDs()
@@ -173,12 +220,19 @@ final class StatusBarController: NSObject {
 
     // MARK: - Startup Rescan
 
-    /// After login many apps load their status items several seconds after
-    /// Snug's initial collapse. Re-run discovery periodically for 30 s so
-    /// the badge count catches up as late-loading items appear.
+    /// After login some apps load their status items several seconds after
+    /// Snug's initial collapse. Re-run discovery for ~10 s so the badge
+    /// count catches up as late-loading items appear.
+    ///
+    /// Reduced in Step 4 from 6 ticks (30 s) to 2 ticks (10 s) now that
+    /// NSWorkspace launch observers + the 60 s heartbeat cover the longer-
+    /// tail cases. The short rescan stays because some apps register
+    /// their `AXExtrasMenuBar` a second or two after their launch
+    /// notification fires — polling briefly at boot is cheaper than
+    /// adding a per-app post-launch retry for every app.
     private func startStartupRescan() {
         startupRescanTimer?.invalidate()
-        startupRescanTicksRemaining = 6  // 6 × 5 s = 30 s
+        startupRescanTicksRemaining = 2  // 2 × 5 s = 10 s
         startupRescanTimer = Timer.scheduledTimer(
             timeInterval: 5,
             target: self,
@@ -190,8 +244,6 @@ final class StatusBarController: NSObject {
 
     @objc private func startupRescanTick() {
         startupRescanTicksRemaining -= 1
-        snugLog("startupRescan: tick (remaining=%d, isCollapsed=%d)",
-              startupRescanTicksRemaining, isCollapsed ? 1 : 0)
         if isCollapsed {
             postCollapseDiscovery()
         }
@@ -948,6 +1000,66 @@ final class StatusBarController: NSObject {
         } else {
             autoHideTimer?.invalidate()
             autoHideTimer = nil
+        }
+    }
+
+    // MARK: - Workspace Events
+
+    /// Apps with prohibited activation policy can't register status items,
+    /// so notifications for them get dropped at the source. Anything else
+    /// (regular + accessory) warrants a discovery refresh.
+    private func workspaceAppIsRelevant(_ note: Notification) -> Bool {
+        guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey]
+            as? NSRunningApplication
+        else { return false }
+        return app.activationPolicy != .prohibited
+    }
+
+    @objc private func workspaceAppLaunched(_ note: Notification) {
+        guard workspaceAppIsRelevant(note) else { return }
+        scheduleWorkspaceRefresh()
+    }
+
+    @objc private func workspaceAppTerminated(_ note: Notification) {
+        guard workspaceAppIsRelevant(note) else { return }
+        scheduleWorkspaceRefresh()
+    }
+
+    /// Debounce launch/terminate bursts into a single rediscovery. Login
+    /// storms can fire 30+ launch notifications in 2–3 s; we only need one
+    /// refresh after things settle.
+    private func scheduleWorkspaceRefresh() {
+        workspaceCoalesce?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            if self.isCollapsed {
+                self.postCollapseDiscovery()
+            } else {
+                self.refreshHiddenItemCache()
+            }
+        }
+        workspaceCoalesce = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: item)
+    }
+
+    /// Heartbeat reconciliation. Runs every ~60 s; only emits a log line
+    /// if the reconciled state actually differs from the current snapshot.
+    /// Covers categories NSWorkspace observers miss: LaunchAgents already
+    /// running at Snug startup, apps that lazily register AX extras, and
+    /// non-app system services.
+    private func reconcile() {
+        let countBefore = currentSnapshot.items.count
+        if isCollapsed {
+            postCollapseDiscovery()
+        } else {
+            refreshHiddenItemCache()
+        }
+        // postCollapseDiscovery is async (0.3 s delay); for the log diff
+        // we'll rely on its own DONE line when the cache actually moves.
+        // Log only if the snapshot we have right now doesn't match count.
+        let countAfter = currentSnapshot.items.count
+        if countBefore != countAfter {
+            snugLog(" reconcile: count %d → %d", countBefore, countAfter)
         }
     }
 
