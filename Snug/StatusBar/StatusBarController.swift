@@ -50,6 +50,18 @@ final class StatusBarController: NSObject {
     /// unless the reconciled state actually differs from the snapshot.
     private var heartbeatTimer: Timer?
 
+    /// Coalesces `screenParametersChanged` bursts. CoreGraphics fires this
+    /// notification 3–7 times over ~800 ms during a normal monitor hotplug,
+    /// and sometimes dozens of times during rapid display state churn. We
+    /// only want one rediscovery when the storm settles.
+    private var screenChangeCoalesce: DispatchWorkItem?
+
+    /// Last-observed set of `NSScreen.screens` frames. A `screenParameters`
+    /// notification whose post-debounce screen set equals this is a
+    /// CoreGraphics timing glitch, not a real configuration change — we
+    /// skip the rediscovery to avoid burning cycles on no-op events.
+    private var lastObservedScreenFrames: [CGRect] = []
+
     /// Width used to push items off-screen (recalculated on screen changes)
     private var collapseLength: CGFloat = 10000
 
@@ -139,6 +151,7 @@ final class StatusBarController: NSObject {
     }
 
     private func setup() {
+        lastObservedScreenFrames = NSScreen.screens.map { $0.frame }
         updateCollapseLength()
 
         // Configure separator — left half-circle  (
@@ -1066,6 +1079,30 @@ final class StatusBarController: NSObject {
     // MARK: - Screen Changes
 
     @objc private func screenParametersChanged() {
+        // Trailing-edge debounce. Wait 200 ms of quiet before acting — long
+        // enough to coalesce the 3–7 CoreGraphics events of a monitor
+        // hotplug, short enough to be imperceptible as lag.
+        screenChangeCoalesce?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            self?.handleScreenChangeSettled()
+        }
+        screenChangeCoalesce = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: item)
+    }
+
+    /// Runs once after a screen-change storm has settled (see
+    /// `screenParametersChanged`). Short-circuits if the screen
+    /// configuration is identical to the last observation — this catches
+    /// CoreGraphics timing glitches (`Invalid new timing data reported for
+    /// display…`) that fire `screenParametersChanged` without an actual
+    /// geometry change.
+    private func handleScreenChangeSettled() {
+        let currentFrames = NSScreen.screens.map { $0.frame }
+        if currentFrames == lastObservedScreenFrames {
+            return
+        }
+        lastObservedScreenFrames = currentFrames
+
         autoHideTimer?.invalidate()
         autoHideTimer = nil
         // Preserve cachedHiddenItems / cachedHiddenItemInfo through sleep/wake.
@@ -1078,13 +1115,10 @@ final class StatusBarController: NSObject {
         isActivatingItem = false
         updateCollapseLength()
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-            guard let self else { return }
-            if self.isCollapsed {
-                self.postCollapseDiscovery()
-            } else {
-                self.refreshHiddenItemCache()
-            }
+        if isCollapsed {
+            postCollapseDiscovery()
+        } else {
+            refreshHiddenItemCache()
         }
     }
 }
