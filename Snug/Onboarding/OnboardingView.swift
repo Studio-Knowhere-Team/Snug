@@ -169,7 +169,7 @@ struct OnboardingView: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             } else {
-                Text("Snug uses Accessibility to read the names of your hidden menu bar icons and let you interact with them from the dropdown.")
+                Text("Snug uses Accessibility to read the names of your hidden icons and let you open their menus from the right-click menu.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

@@ -24,7 +24,6 @@ final class StatusBarController: NSObject {
     // MARK: - Menu Bar Item Management
 
     private let itemManager = MenuBarItemManager()
-    private var notchDropdownCoordinator: NotchDropdownCoordinator?
 
     // MARK: - State
 
@@ -50,16 +49,6 @@ final class StatusBarController: NSObject {
 
     /// Pre-resolved info (name + icon) from when items were still visible on screen
     private var cachedHiddenItemInfo: [HiddenItemInfo] = []
-
-    /// Whether the current display has a notch
-    private var hasNotch: Bool = false
-
-    /// Cached notch rect — the notch is a physical screen property that rarely
-    /// changes. Recalculated only on screen-parameter changes.
-    private var cachedNotchRect: CGRect = .zero
-
-    /// The leftmost safe X position (right edge of notch zone)
-    private var safeLeftX: CGFloat = 80
 
     /// Item count discovered post-collapse (includes items behind the notch).
     /// CGWindowList sees all items once they're pushed off-screen, even ones
@@ -120,8 +109,6 @@ final class StatusBarController: NSObject {
     }
 
     private func setup() {
-        calculateSafeLeftX()
-        setupNotchDropdown()
         updateCollapseLength()
 
         // Configure separator — left half-circle  (
@@ -160,7 +147,6 @@ final class StatusBarController: NSObject {
                 .map { (windowID: $0.windowID, naturalX: $0.frame.minX) }
             self.cachedHiddenItems = hidden
             self.cachedHiddenItemInfo = AccessibilityMenuBarHelper.resolveItems(for: hidden)
-            self.updateNotchDropdownItems()
             snugLog(" setup: resolved %d items at natural width: %@",
                   self.cachedHiddenItemInfo.count,
                   self.cachedHiddenItemInfo.map { $0.name }.joined(separator: ", "))
@@ -199,31 +185,6 @@ final class StatusBarController: NSObject {
             startupRescanTimer = nil
             snugLog("startupRescan: finished")
         }
-    }
-
-    private func setupNotchDropdown() {
-        guard hasNotch, preferences.isPocketEnabled else {
-            notchDropdownCoordinator?.stop()
-            notchDropdownCoordinator = nil
-            return
-        }
-
-        // Stop old coordinator before creating replacement to avoid
-        // overlapping event monitors during ARC deallocation window.
-        notchDropdownCoordinator?.stop()
-        notchDropdownCoordinator = nil
-
-        let coordinator = NotchDropdownCoordinator()
-        coordinator.onItemActivated = { [weak self] info in
-            self?.activateHiddenItem(info)
-        }
-        notchDropdownCoordinator = coordinator
-        coordinator.update(items: cachedHiddenItemInfo, notchRect: cachedNotchRect)
-    }
-
-    private func updateNotchDropdownItems() {
-        guard let notchDropdownCoordinator else { return }
-        notchDropdownCoordinator.updateItems(cachedHiddenItemInfo)
     }
 
     // MARK: - Icons
@@ -348,71 +309,20 @@ final class StatusBarController: NSObject {
         return image
     }
 
-    // MARK: - Notch Detection
-
-    private func calculateNotchRect() -> CGRect {
-        guard let screen = toggleItem.button?.window?.screen ?? NSScreen.screens.first else {
-            snugLog(" calculateNotchRect: x=0 y=0 width=0 height=0")
-            return .zero
-        }
-
-        let notchHeight = screen.safeAreaInsets.top
-        guard notchHeight > 0,
-              let leftArea = screen.auxiliaryTopLeftArea,
-              let rightArea = screen.auxiliaryTopRightArea
-        else {
-            snugLog(" calculateNotchRect: x=0 y=0 width=0 height=0")
-            return .zero
-        }
-
-        let notchMinX = screen.frame.origin.x + leftArea.maxX
-        let notchMaxX = screen.frame.origin.x + rightArea.minX
-        let notchWidth = notchMaxX - notchMinX
-
-        guard notchWidth > 0 else {
-            snugLog(" calculateNotchRect: x=0 y=0 width=0 height=0")
-            return .zero
-        }
-
-        let notchRect = CGRect(
-            x: notchMinX,
-            y: screen.frame.maxY - notchHeight,
-            width: notchWidth,
-            height: notchHeight
-        )
-        snugLog(" calculateNotchRect: x=%.0f y=%.0f width=%.0f height=%.0f",
-              notchRect.origin.x, notchRect.origin.y, notchRect.width, notchRect.height)
-        return notchRect
-    }
-
-    private func calculateSafeLeftX() {
-        // NSStatusBar.system.thickness is deprecated and always returns 22 —
-        // useless for notch detection. Use NSScreen.safeAreaInsets instead:
-        // on notched MacBooks, safeAreaInsets.top > 0.
-        let notchRect = calculateNotchRect()
-        hasNotch = !notchRect.isEmpty
-        safeLeftX = hasNotch ? notchRect.maxX : 80
-
-        // Cache the notch rect — it's a physical screen property that doesn't
-        // change until a display connect/disconnect event.
-        if !notchRect.isEmpty {
-            cachedNotchRect = notchRect
-        }
-
-        snugLog(" calculateSafeLeftX: hasNotch=%d, safeLeftX=%.0f, cachedNotchRect=(%.0f, %.0f, %.0f, %.0f)",
-              hasNotch ? 1 : 0, safeLeftX,
-              cachedNotchRect.origin.x, cachedNotchRect.origin.y,
-              cachedNotchRect.width, cachedNotchRect.height)
-    }
-
     // MARK: - Hidden Items
 
     /// Items to the left of the separator, filtered to the separator's display.
+    ///
+    /// Filtering to one display is essential in multi-monitor setups — without
+    /// it, CGWindowList can return the same logical status item multiple times
+    /// (once per display) and items from displays placed to the left of the
+    /// separator's display also pass the naive `midX < sepX` check. Display
+    /// mismatches between calls are handled by `refreshHiddenItemCache`'s
+    /// merge logic, which preserves previously-discovered items rather than
+    /// overwriting the cache on every scan.
     private func itemsLeftOfSeparator() -> [MenuBarItem] {
         let sepX = separatorOriginX
 
-        // Use CGDisplayBounds (Quartz coords, same as CGWindowList) to
-        // restrict items to the display the separator is actually on.
         guard let screen = separatorItem.button?.window?.screen,
               let screenNumber = screen.deviceDescription[
                   NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
@@ -510,8 +420,8 @@ final class StatusBarController: NSObject {
         // Safety: if the separator was cmd-dragged to the wrong side, fix it.
         ensureSeparatorIsLeftOfToggle()
 
-        snugLog(" collapseMenuBar: isCollapsed=%d, hasNotch=%d, cachedNaturalPositions=%d, cachedHiddenItems=%d, cachedHiddenItemInfo=%d",
-              isCollapsed ? 1 : 0, hasNotch ? 1 : 0,
+        snugLog(" collapseMenuBar: isCollapsed=%d, cachedNaturalPositions=%d, cachedHiddenItems=%d, cachedHiddenItemInfo=%d",
+              isCollapsed ? 1 : 0,
               cachedNaturalPositions.count, cachedHiddenItems.count, cachedHiddenItemInfo.count)
 
         // Capture positions before collapse (items at natural width).
@@ -527,7 +437,6 @@ final class StatusBarController: NSObject {
         // Resolve names while items are still on-screen (AX needs visible positions).
         if !isCollapsed && cachedHiddenItemInfo.isEmpty {
             cachedHiddenItemInfo = AccessibilityMenuBarHelper.resolveItems(for: cachedHiddenItems)
-            updateNotchDropdownItems()
             snugLog(" collapseMenuBar: resolved %d item names: %@",
                   cachedHiddenItemInfo.count,
                   cachedHiddenItemInfo.map { $0.name }.joined(separator: ", "))
@@ -542,10 +451,6 @@ final class StatusBarController: NSObject {
         // Recalculate in case screen changed or initial value was stale.
         updateCollapseLength()
         separatorItem.length = collapseLength
-        if notchDropdownCoordinator == nil {
-            setupNotchDropdown()
-        }
-        notchDropdownCoordinator?.update(items: cachedHiddenItemInfo, notchRect: cachedNotchRect)
         isToggling = false
 
         // Post-collapse: after the separator has pushed ALL items off-screen,
@@ -565,62 +470,99 @@ final class StatusBarController: NSObject {
             self.itemManager.refreshItems()
             let allPushed = self.allItemsPushedBySeparator()
 
-            snugLog(" postCollapseDiscovery: allPushed=%d, previous postCollapseItemCount=%d, cachedHiddenItems=%d",
-                  allPushed.count, self.postCollapseItemCount, self.cachedHiddenItems.count)
-            for item in allPushed {
-                snugLog("   pushed item: wid=%d owner=%@ pid=%d x=%.0f",
-                      item.windowID, item.ownerName, item.ownerPID, item.frame.origin.x)
+            // Prune entries whose owning app has quit — their PID is no longer
+            // running, so the menu bar item no longer exists. Without this the
+            // badge stays stale until the next expand/collapse.
+            let beforePrune = self.cachedHiddenItemInfo.count
+            self.cachedHiddenItemInfo.removeAll { info in
+                NSRunningApplication(processIdentifier: info.ownerPID) == nil
+            }
+            if self.cachedHiddenItemInfo.count != beforePrune {
+                snugLog(" postCollapseDiscovery: pruned %d entries for quit apps",
+                      beforePrune - self.cachedHiddenItemInfo.count)
+                self.updateToggleIcon()
             }
 
+            // Snapshot the cache names up front so we can detect real changes
+            // and only log when something actually moved — avoids spamming the
+            // log every startup-rescan tick when nothing has changed.
+            let namesBefore = self.cachedHiddenItemInfo.map { $0.name }
+
             if allPushed.count != self.postCollapseItemCount {
+                snugLog(" postCollapseDiscovery: count %d → %d",
+                      self.postCollapseItemCount, allPushed.count)
                 self.postCollapseItemCount = allPushed.count
-                snugLog(" postCollapseDiscovery: count changed to %d", allPushed.count)
             }
 
             // Find items discovered post-collapse that weren't in the natural-width scan.
             let knownIDs = Set(self.cachedHiddenItems.map { $0.windowID })
             let newItems = allPushed.filter { !knownIDs.contains($0.windowID) }
 
-            snugLog(" postCollapseDiscovery: knownIDs=%d, newItems=%d",
-                  knownIDs.count, newItems.count)
-
             if !newItems.isEmpty {
                 let newInfo = Self.resolveItemsByProcess(newItems)
-                snugLog(" postCollapseDiscovery: resolved %d new items by process: %@",
-                      newInfo.count, newInfo.map { $0.name }.joined(separator: ", "))
                 let existingNames = Set(self.cachedHiddenItemInfo.map { self.baseName(of: $0.name) })
-                snugLog(" postCollapseDiscovery: existing names: %@",
-                      existingNames.sorted().joined(separator: ", "))
                 let uniqueNew = newInfo.filter { !existingNames.contains(self.baseName(of: $0.name)) }
-                snugLog(" postCollapseDiscovery: uniqueNew from process=%d", uniqueNew.count)
                 if !uniqueNew.isEmpty {
+                    snugLog(" postCollapseDiscovery: resolved %d new by process: %@",
+                          uniqueNew.count, uniqueNew.map { $0.name }.joined(separator: ", "))
                     self.cachedHiddenItemInfo.append(contentsOf: uniqueNew)
                     self.cachedHiddenItemInfo.sort { $0.name < $1.name }
-                    self.updateNotchDropdownItems()
                 }
             }
 
-            // Also try AX tree enumeration to discover items that process-based
-            // resolution misses (e.g., Control Centre-hosted third-party items).
-            // Use the toggle position as the dividing line — everything to its left is "hidden".
+            // Walk every running app and ask it directly for its own
+            // AXExtrasMenuBar — but ONLY if we're missing names for hidden
+            // items. This is the only path that can name behind-the-notch
+            // items on a notched MBP (CGWindowList reports their owner as
+            // Control Centre, which we skip). The per-app scan is flaky,
+            // though: during display transitions or while a status item is
+            // being realized it will briefly return apps whose extras are
+            // actually *visible* on the right of the separator, with zero AX
+            // frames. Gating it on the gap (`allPushed` is CGWindowList-
+            // authoritative post-collapse) means we don't add phantoms when
+            // the cache is already complete.
             let toggleX = self.toggleItem.button?.window?.frame.origin.x ?? CGFloat.greatestFiniteMagnitude
-            let screenY = self.toggleItem.button?.window?.frame.midY ?? 12
-            let axExtras = AccessibilityMenuBarHelper.enumerateAllExtras(leftOf: toggleX, screenY: screenY)
-            if !axExtras.isEmpty {
+            let gap = max(0, allPushed.count - self.cachedHiddenItemInfo.count)
+            if gap > 0 {
+                let byApp = AccessibilityMenuBarHelper.enumerateExtrasByRunningApps(leftOf: toggleX)
                 let existingNamesNow = Set(self.cachedHiddenItemInfo.map { self.baseName(of: $0.name) })
-                let newFromAX = axExtras.filter { !existingNamesNow.contains(self.baseName(of: $0.name)) }
-                if !newFromAX.isEmpty {
-                    snugLog(" postCollapseDiscovery: AX enumeration found %d additional items: %@",
-                          newFromAX.count, newFromAX.map { $0.name }.joined(separator: ", "))
-                    self.cachedHiddenItemInfo.append(contentsOf: newFromAX)
+                let newFromApps = byApp.filter { !existingNamesNow.contains(self.baseName(of: $0.name)) }
+                let limited = Array(newFromApps.prefix(gap))
+                if !limited.isEmpty {
+                    snugLog(" postCollapseDiscovery: resolved %d new by per-app scan: %@",
+                          limited.count, limited.map { $0.name }.joined(separator: ", "))
+                    self.cachedHiddenItemInfo.append(contentsOf: limited)
                     self.cachedHiddenItemInfo.sort { $0.name < $1.name }
-                    self.updateNotchDropdownItems()
                 }
             }
 
-            snugLog(" postCollapseDiscovery DONE: cachedHiddenItemInfo=%d, postCollapseItemCount=%d: %@",
-                  self.cachedHiddenItemInfo.count, self.postCollapseItemCount,
-                  self.cachedHiddenItemInfo.map { $0.name }.joined(separator: ", "))
+            // Trim cache if it's overshot the authoritative count (this
+            // happens when a prior merge ran before the gap-gate, or when
+            // apps drop their extras without quitting). Prefer to drop
+            // `windowID == 0` entries first — those came from per-app
+            // enumeration and are lower-confidence than CGWindowList-sourced
+            // entries.
+            if allPushed.count > 0 && self.cachedHiddenItemInfo.count > allPushed.count {
+                let before = self.cachedHiddenItemInfo.count
+                let ranked = self.cachedHiddenItemInfo.sorted { a, b in
+                    if (a.windowID != 0) != (b.windowID != 0) {
+                        return a.windowID != 0  // keep CGWindowList-sourced first
+                    }
+                    return a.name < b.name
+                }
+                self.cachedHiddenItemInfo = Array(ranked.prefix(allPushed.count))
+                    .sorted { $0.name < $1.name }
+                snugLog(" postCollapseDiscovery: trimmed %d stale entries (cache %d → %d)",
+                      before - self.cachedHiddenItemInfo.count,
+                      before, self.cachedHiddenItemInfo.count)
+            }
+
+            // Only emit the DONE summary when the cache actually changed.
+            let namesAfter = self.cachedHiddenItemInfo.map { $0.name }
+            if namesAfter != namesBefore {
+                snugLog(" postCollapseDiscovery DONE: %d items: %@",
+                      namesAfter.count, namesAfter.joined(separator: ", "))
+            }
 
             // Refresh the icon if the count may have changed.
             self.updateToggleIcon()
@@ -640,6 +582,10 @@ final class StatusBarController: NSObject {
             // Skip Control Centre — it hosts third-party items on modern macOS,
             // so grouping by its name is meaningless.
             guard name != "Control Centre" && name != "Control Center" else { continue }
+            // Skip Window Server — it briefly owns phantom duplicate status-item
+            // windows during Control Centre replication events (visible in
+            // CGWindowList but not real, user-facing menu bar extras).
+            guard name != "Window Server" else { continue }
             // Skip system widgets
             guard !AccessibilityMenuBarHelper.systemWidgetNames.contains(name) else { continue }
 
@@ -668,8 +614,6 @@ final class StatusBarController: NSObject {
         // at the same moment the items appear — not 250ms after.
         isCollapsed = false
         updateToggleIcon()
-        notchDropdownCoordinator?.stop()
-        notchDropdownCoordinator = nil
 
         // Reveal items instantly.
         separatorItem.length = NSStatusItem.variableLength
@@ -693,19 +637,31 @@ final class StatusBarController: NSObject {
             .map { (windowID: $0.windowID, naturalX: $0.frame.minX) }
         cachedHiddenItems = hidden
 
+        // Merge fresh discovery with the existing cache, but cap the result
+        // at the authoritative count (max of `hidden.count` and the last
+        // post-collapse count). Fresh discovery at expanded width can miss
+        // items that only become visible post-collapse (behind the notch),
+        // so we preserve prior entries to fill that gap — but never beyond
+        // the true count. Preserved entries are ranked so that the
+        // highest-confidence (CGWindowList-sourced, `windowID != 0`) ones
+        // survive when trimming. Quit-app pruning happens in
+        // postCollapseDiscovery.
         let freshInfo = AccessibilityMenuBarHelper.resolveItems(for: hidden)
-        if postCollapseItemCount > freshInfo.count &&
-           cachedHiddenItemInfo.count > freshInfo.count {
-            let freshNames = Set(freshInfo.map { baseName(of: $0.name) })
-            let preserved = cachedHiddenItemInfo.filter {
-                !freshNames.contains(baseName(of: $0.name))
-            }
-            cachedHiddenItemInfo = freshInfo + preserved
-            cachedHiddenItemInfo.sort { $0.name < $1.name }
-        } else {
-            cachedHiddenItemInfo = freshInfo
+        let freshNames = Set(freshInfo.map { baseName(of: $0.name) })
+        let preserved = cachedHiddenItemInfo.filter {
+            !freshNames.contains(baseName(of: $0.name))
         }
-        updateNotchDropdownItems()
+        let target = max(hidden.count, postCollapseItemCount)
+        let slotsForPreserved = max(0, target - freshInfo.count)
+        let rankedPreserved = preserved.sorted { a, b in
+            if (a.windowID != 0) != (b.windowID != 0) {
+                return a.windowID != 0
+            }
+            return a.name < b.name
+        }
+        let keptPreserved = Array(rankedPreserved.prefix(slotsForPreserved))
+        cachedHiddenItemInfo = (freshInfo + keptPreserved)
+            .sorted { $0.name < $1.name }
         snugLog(" refreshHiddenItemCache: hidden=%d, resolved=%d",
               hidden.count, cachedHiddenItemInfo.count)
     }
@@ -763,8 +719,6 @@ final class StatusBarController: NSObject {
     }
 
     private func showContextMenu() {
-        notchDropdownCoordinator?.dismissPanel()
-
         let menu = NSMenu()
 
         // Show all hidden items when collapsed
@@ -831,8 +785,6 @@ final class StatusBarController: NSObject {
         separatorItem.length = NSStatusItem.variableLength
         isCollapsed = false
         updateToggleIcon()
-        notchDropdownCoordinator?.stop()
-        notchDropdownCoordinator = nil
 
         // After expansion settles, move the item next to the separator then press it.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
@@ -913,33 +865,25 @@ final class StatusBarController: NSObject {
             autoHideTimer?.invalidate()
             autoHideTimer = nil
         }
-
-        // Re-evaluate pocket state when toggled
-        setupNotchDropdown()
     }
 
     // MARK: - Screen Changes
 
     @objc private func screenParametersChanged() {
-        notchDropdownCoordinator?.dismissPanel()
         autoHideTimer?.invalidate()
         autoHideTimer = nil
-        notchDropdownCoordinator?.stop()
-        notchDropdownCoordinator = nil
+        // Preserve cachedHiddenItems / cachedHiddenItemInfo through sleep/wake.
+        // Names can only be resolved at natural (expanded) width, and on wake
+        // the app stays collapsed — so clearing the caches here leaves the
+        // right-click menu empty until the user manually expand/collapses.
+        // Positions can still be stale, so only drop cachedNaturalPositions.
         cachedNaturalPositions = []
-        cachedHiddenItems = []
-        cachedHiddenItemInfo = []
-        cachedNotchRect = .zero
-        postCollapseItemCount = 0
         isActivatingItem = false
-        calculateSafeLeftX()
         updateCollapseLength()
-        setupNotchDropdown()
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
             guard let self else { return }
             if self.isCollapsed {
-                self.notchDropdownCoordinator?.update(items: self.cachedHiddenItemInfo, notchRect: self.cachedNotchRect)
                 self.postCollapseDiscovery()
             } else {
                 self.refreshHiddenItemCache()

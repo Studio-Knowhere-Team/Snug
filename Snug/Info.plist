@@ -23,7 +23,7 @@
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSAccessibilityUsageDescription</key>
-	<string>Snug needs Accessibility access to detect hidden menu bar items, track when your cursor enters the menu bar area, and interact with hidden items from the dropdown.</string>
+	<string>Snug needs Accessibility access to read the names of hidden menu bar items and let you open their menus from its right-click menu.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright © 2025–2026 Mike Williams. All rights reserved.</string>
 	<key>SUFeedURL</key>

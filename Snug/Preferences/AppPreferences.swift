@@ -26,14 +26,6 @@ final class AppPreferences {
         }
     }
 
-    var isPocketEnabled: Bool {
-        get { UserDefaults.standard.bool(forKey: Keys.isPocketEnabled) }
-        set {
-            UserDefaults.standard.set(newValue, forKey: Keys.isPocketEnabled)
-            onPreferencesChanged?()
-        }
-    }
-
     var hasCompletedOnboarding: Bool {
         get { UserDefaults.standard.bool(forKey: Keys.hasCompletedOnboarding) }
         set { UserDefaults.standard.set(newValue, forKey: Keys.hasCompletedOnboarding) }
@@ -45,7 +37,6 @@ final class AppPreferences {
         UserDefaults.standard.register(defaults: [
             Keys.isAutoHide: false,
             Keys.autoHideInterval: AutoHideInterval.tenSeconds.rawValue,
-            Keys.isPocketEnabled: true,
             Keys.hasCompletedOnboarding: false,
         ])
     }
@@ -53,7 +44,6 @@ final class AppPreferences {
     enum Keys {
         static let isAutoHide = "isAutoHide"
         static let autoHideInterval = "numberOfSecondForAutoHide"
-        static let isPocketEnabled = "isPocketEnabled"
         static let hasCompletedOnboarding = "hasCompletedOnboarding"
     }
 }

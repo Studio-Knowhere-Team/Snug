@@ -8,7 +8,6 @@ struct GeneralSettingsView: View {
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var accessibilityGranted = AccessibilityMenuBarHelper.isGranted
     @State private var accessibilityTimer: Timer?
-    @AppStorage("isPocketEnabled") private var pocketEnabled = true
 
     var body: some View {
         Form {
@@ -42,19 +41,6 @@ struct GeneralSettingsView: View {
                         }
                     }
                 }
-            }
-
-            Section {
-                Toggle("Show Pocket below notch", isOn: $pocketEnabled)
-                    .onChange(of: pocketEnabled) { _, _ in
-                        preferences.onPreferencesChanged?()
-                    }
-
-                Text("When collapsed, hover over the notch to reveal hidden icons in a dropdown.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            } header: {
-                Text("Pocket")
             }
 
             Section {

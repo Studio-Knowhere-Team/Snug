@@ -179,146 +179,99 @@ enum AccessibilityMenuBarHelper {
 
     // MARK: - AX Hierarchy Enumeration
 
-    /// Enumerate ALL menu bar extras via the AX tree, regardless of screen position.
-    /// This finds items hidden behind the notch that position-based queries miss.
-    /// Items are filtered to only include those left of `separatorX` on the given screen.
-    static func enumerateAllExtras(leftOf separatorX: CGFloat, screenY: CGFloat) -> [HiddenItemInfo] {
+    /// Enumerate status items by walking every running application and asking
+    /// each one directly for its own `AXExtrasMenuBar` children.
+    ///
+    /// This is the only reliable way to name behind-the-notch items on a
+    /// notched MacBook. CGWindowList reports such items as owned by
+    /// `Control Centre` (which multiplexes third-party items), and querying
+    /// Control Centre's `AXExtrasMenuBar` returns elements that don't carry
+    /// resolvable names. But when you query the TARGET app's own AX
+    /// application, it returns its own status item(s) with the real PID and
+    /// therefore the real app name.
+    ///
+    /// Returns items filtered to those left of `separatorX` so we only report
+    /// items that would be hidden by the separator when collapsed.
+    static func enumerateExtrasByRunningApps(leftOf separatorX: CGFloat) -> [HiddenItemInfo] {
         guard isGranted else { return [] }
 
-        // The "AXExtrasMenuBar" attribute returns the system extras menu bar.
-        // Try multiple app PIDs — availability varies by macOS version and
-        // which process is frontmost.
-        guard let children = extrasMenuBarChildren() else { return [] }
-
+        let ownPID = ProcessInfo.processInfo.processIdentifier
         var seen: [String: (icon: NSImage?, frame: CGRect, ownerPID: pid_t)] = [:]
         var counts: [String: Int] = [:]
 
-        for child in children {
-            let role = axStringAttribute(child, kAXRoleAttribute)
-            let subrole = axStringAttribute(child, kAXSubroleAttribute)
-            guard role == "AXMenuBarItem" && subrole == "AXMenuExtra" else { continue }
+        // Only accessory/regular apps can own status items; agents can't.
+        // Skipping prohibited apps cuts the enumeration cost substantially.
+        let candidates = NSWorkspace.shared.runningApplications.filter { app in
+            app.processIdentifier != ownPID &&
+                app.activationPolicy != .prohibited
+        }
 
-            // Read frame from AX position + size attributes
-            let frame = axFrame(of: child)
+        for app in candidates {
+            let pid = app.processIdentifier
+            let axApp = AXUIElementCreateApplication(pid)
 
-            // Skip items that aren't in the menu bar area (wrong screen)
-            guard abs(frame.midY - screenY) < 30 else { continue }
+            var extrasBarValue: AnyObject?
+            let barResult = AXUIElementCopyAttributeValue(
+                axApp, "AXExtrasMenuBar" as CFString, &extrasBarValue
+            )
+            guard barResult == .success, let extrasBar = extrasBarValue else {
+                continue
+            }
 
-            // Skip items to the right of the separator — those aren't ours
-            guard frame.midX < separatorX else { continue }
+            // swiftlint:disable:next force_cast — CF type bridging always succeeds
+            let bar = extrasBar as! AXUIElement
 
-            // Resolve name + icon
-            guard let info = resolveElement(child, frame: frame) else { continue }
+            var childrenValue: AnyObject?
+            AXUIElementCopyAttributeValue(
+                bar, kAXChildrenAttribute as CFString, &childrenValue
+            )
+            guard let children = childrenValue as? [AXUIElement], !children.isEmpty else {
+                continue
+            }
 
-            counts[info.name, default: 0] += 1
-            if seen[info.name] == nil {
-                seen[info.name] = (icon: info.icon, frame: info.frame, ownerPID: info.ownerPID)
+            for child in children {
+                let role = axStringAttribute(child, kAXRoleAttribute)
+                let subrole = axStringAttribute(child, kAXSubroleAttribute)
+                guard role == "AXMenuBarItem" && subrole == "AXMenuExtra" else { continue }
+
+                let frame = axFrame(of: child)
+
+                // If we have a non-zero frame and it's right of the separator,
+                // it's not hidden by us. A zero frame means the item is
+                // behind-the-notch or otherwise unpositioned — still include it
+                // because those are the very items we need this path to catch.
+                if frame.width > 0 && frame.midX >= separatorX { continue }
+
+                let name = app.localizedName ?? "Unknown"
+
+                // Skip system widgets and Control Centre itself (shouldn't
+                // appear here given we're querying the owning app directly,
+                // but belt-and-braces).
+                guard !systemWidgetNames.contains(name) else { continue }
+                guard name != "Control Centre" && name != "Control Center" else { continue }
+
+                counts[name, default: 0] += 1
+                if seen[name] == nil {
+                    let icon = app.icon?.scaled(to: NSSize(width: 16, height: 16))
+                    seen[name] = (icon: icon, frame: frame, ownerPID: pid)
+                }
             }
         }
 
         return counts.sorted(by: { $0.key < $1.key }).compactMap { name, count in
             guard let data = seen[name] else { return nil }
             let displayName = count > 1 ? "\(name) (\(count))" : name
-            return HiddenItemInfo(name: displayName, icon: data.icon, frame: data.frame, windowID: 0, ownerPID: data.ownerPID)
+            return HiddenItemInfo(
+                name: displayName,
+                icon: data.icon,
+                frame: data.frame,
+                windowID: 0,
+                ownerPID: data.ownerPID
+            )
         }
     }
 
     // MARK: - Private
-
-    /// Try to obtain the AXExtrasMenuBar children from multiple candidate processes.
-    /// Returns nil if no process exposes the extras menu bar.
-    private static func extrasMenuBarChildren() -> [AXUIElement]? {
-        // Build list of PIDs to try (deduplicated, order matters)
-        var tried = Set<pid_t>()
-        var pids: [pid_t] = []
-        let ownPID = ProcessInfo.processInfo.processIdentifier
-
-        func add(_ pid: pid_t) {
-            if tried.insert(pid).inserted { pids.append(pid) }
-        }
-
-        // Frontmost app (often has the attribute)
-        if let front = NSWorkspace.shared.frontmostApplication {
-            add(front.processIdentifier)
-        }
-
-        // Snapshot running apps once to avoid repeated enumeration
-        let runningApps = NSWorkspace.shared.runningApplications
-
-        // Finder (always running)
-        if let finder = runningApps.first(where: {
-            $0.bundleIdentifier == "com.apple.finder"
-        }) {
-            add(finder.processIdentifier)
-        }
-
-        // Control Center (hosts third-party extras on modern macOS)
-        if let cc = runningApps.first(where: {
-            $0.bundleIdentifier == "com.apple.controlcenter"
-        }) {
-            add(cc.processIdentifier)
-        }
-
-        // SystemUIServer (hosts extras on older macOS)
-        if let suis = runningApps.first(where: {
-            $0.bundleIdentifier == "com.apple.systemuiserver"
-        }) {
-            add(suis.processIdentifier)
-        }
-
-        snugLog("extrasMenuBarChildren: trying %d PIDs: %@ (ownPID=%d excluded from early return)",
-              pids.count, pids.map { String($0) }.joined(separator: ", "), ownPID)
-
-        // Try all PIDs and return the LARGEST set of children.
-        // Our own app (Snug) may return its own 2 status items via AXExtrasMenuBar,
-        // which would incorrectly shadow the real extras from Control Centre.
-        // By picking the largest set, we get the actual third-party items.
-        var bestChildren: [AXUIElement]?
-        var bestCount = 0
-        var bestPID: pid_t = 0
-
-        for pid in pids {
-            let app = AXUIElementCreateApplication(pid)
-            var extrasBarValue: AnyObject?
-            let barResult = AXUIElementCopyAttributeValue(
-                app, "AXExtrasMenuBar" as CFString, &extrasBarValue
-            )
-            if barResult != .success {
-                snugLog("  pid %d: AXExtrasMenuBar failed (error=%d)", pid, barResult.rawValue)
-                continue
-            }
-            guard let extrasBar = extrasBarValue else {
-                snugLog("  pid %d: AXExtrasMenuBar nil value", pid)
-                continue
-            }
-
-            // swiftlint:disable:next force_cast — CF type bridging always succeeds
-            let bar = extrasBar as! AXUIElement
-            var childrenValue: AnyObject?
-            let childResult = AXUIElementCopyAttributeValue(
-                bar, kAXChildrenAttribute as CFString, &childrenValue
-            )
-            if let children = childrenValue as? [AXUIElement], !children.isEmpty {
-                snugLog("  pid %d: found %d children%@", pid, children.count,
-                      pid == ownPID ? " (own app)" : "")
-                if children.count > bestCount {
-                    bestChildren = children
-                    bestCount = children.count
-                    bestPID = pid
-                }
-            } else {
-                snugLog("  pid %d: AXExtrasMenuBar found but children empty/nil (result=%d)", pid, childResult.rawValue)
-            }
-        }
-
-        if let bestChildren {
-            snugLog("extrasMenuBarChildren: returning %d children from pid %d", bestCount, bestPID)
-            return bestChildren
-        }
-
-        snugLog("extrasMenuBarChildren: all PIDs exhausted, returning nil")
-        return nil
-    }
 
     /// Resolve name + icon from an AXUIElement that is known to be a menu bar extra.
     private static func resolveElement(_ element: AXUIElement, frame: CGRect, windowID: CGWindowID = 0) -> HiddenItemInfo? {
@@ -335,10 +288,6 @@ enum AccessibilityMenuBarHelper {
         let axTitle = axStringAttribute(element, kAXTitleAttribute)
         let axIdent = axStringAttribute(element, "AXIdentifier")
         let appName = app?.localizedName
-
-        snugLog("resolveElement: pid=%d app=%@ desc=%@ help=%@ title=%@ ident=%@ frame=(%.0f,%.0f)",
-              pid, appName ?? "nil", axDesc ?? "nil", axHelp ?? "nil",
-              axTitle ?? "nil", axIdent ?? "nil", frame.origin.x, frame.origin.y)
 
         let name: String? = {
             if let appName,
