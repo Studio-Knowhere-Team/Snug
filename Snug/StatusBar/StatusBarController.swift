@@ -395,9 +395,12 @@ final class StatusBarController: NSObject {
 
     /// Count of hidden items for the badge. Prefers the AX-resolved count
     /// (has names), falls back to the CGWindowList count (works without AX).
+    ///
+    /// Reads through `currentSnapshot` so the badge reflects the atomic
+    /// state — no torn read between `items.count` and `totalCount`.
     private var hiddenItemCount: Int {
-        let live = cachedHiddenItemInfo.count
-        return live > 0 ? live : postCollapseItemCount
+        let live = currentSnapshot.items.count
+        return live > 0 ? live : currentSnapshot.totalCount
     }
 
     private func updateToggleIcon(animated: Bool = true) {
@@ -800,8 +803,10 @@ final class StatusBarController: NSObject {
     private func showContextMenu() {
         let menu = NSMenu()
 
-        // Show all hidden items when collapsed
-        let allItems = isCollapsed ? cachedHiddenItemInfo : []
+        // Show all hidden items when collapsed. Read through currentSnapshot
+        // so the menu built here is atomic with respect to any ongoing
+        // discovery — a mid-discovery mutation cannot tear the items list.
+        let allItems = isCollapsed ? currentSnapshot.items : []
 
         snugLog(" showContextMenu: items=%d, isCollapsed=%d",
               allItems.count, isCollapsed ? 1 : 0)
