@@ -180,6 +180,89 @@ final class CacheMergeTests: XCTestCase {
             "phantom survived")
     }
 
+    // MARK: - Stability gate (Step 8 — the actual fix)
+
+    func testPromoteCountIfStable_noChangeWhenObservedMatchesCurrent() {
+        let (newCount, newPending) = CacheMerge.promoteCountIfStable(
+            observed: 6, current: 6, pending: nil
+        )
+        XCTAssertEqual(newCount, 6)
+        XCTAssertNil(newPending)
+    }
+
+    func testPromoteCountIfStable_clearsPendingOnReturnToCurrent() {
+        // We had a pending 12 but now observe 6 (back to current) — pending
+        // should clear without promoting.
+        let (newCount, newPending) = CacheMerge.promoteCountIfStable(
+            observed: 6, current: 6, pending: 12
+        )
+        XCTAssertEqual(newCount, 6)
+        XCTAssertNil(newPending)
+    }
+
+    func testPromoteCountIfStable_recordsFirstDifferentObservationAsPending() {
+        // First time we see a different value — record as pending, hold
+        // current. This is the gate that stopped the 6→9 bug.
+        let (newCount, newPending) = CacheMerge.promoteCountIfStable(
+            observed: 12, current: 6, pending: nil
+        )
+        XCTAssertEqual(newCount, 6, "must not adopt first transient reading")
+        XCTAssertEqual(newPending, 12)
+    }
+
+    func testPromoteCountIfStable_promotesOnConfirmedReading() {
+        // Second matching observation — confirmed, promote.
+        let (newCount, newPending) = CacheMerge.promoteCountIfStable(
+            observed: 7, current: 6, pending: 7
+        )
+        XCTAssertEqual(newCount, 7)
+        XCTAssertNil(newPending)
+    }
+
+    func testPromoteCountIfStable_rebasesPendingOnDifferentObservation() {
+        // Pending was 12; now we see 15 (another different value). Replace
+        // pending with 15; don't promote either.
+        let (newCount, newPending) = CacheMerge.promoteCountIfStable(
+            observed: 15, current: 6, pending: 12
+        )
+        XCTAssertEqual(newCount, 6)
+        XCTAssertEqual(newPending, 15)
+    }
+
+    /// End-to-end proof of the bug fix: the exact 6 → 12 → 6 sequence that
+    /// produced the production 6→9 failure no longer inflates `current`.
+    func testPromoteCountIfStable_protectsAgainst6to12to6Transient() {
+        // Tick 1: see 12 (first time). Hold 6, pending=12.
+        var result = CacheMerge.promoteCountIfStable(
+            observed: 12, current: 6, pending: nil
+        )
+        XCTAssertEqual(result.newCount, 6)
+        XCTAssertEqual(result.newPending, 12)
+
+        // Tick 2: transient gone, see 6. Current=6, pending cleared.
+        result = CacheMerge.promoteCountIfStable(
+            observed: 6, current: result.newCount, pending: result.newPending
+        )
+        XCTAssertEqual(result.newCount, 6)
+        XCTAssertNil(result.newPending)
+    }
+
+    /// Counter-test to the above: if 12 shows up TWICE in a row (a real,
+    /// sustained state change — say the user genuinely added items while
+    /// Snug was asleep), the gate promotes correctly.
+    func testPromoteCountIfStable_promotesSustainedChange() {
+        var result = CacheMerge.promoteCountIfStable(
+            observed: 12, current: 6, pending: nil
+        )
+        XCTAssertEqual(result.newCount, 6, "first reading: no promote")
+
+        result = CacheMerge.promoteCountIfStable(
+            observed: 12, current: result.newCount, pending: result.newPending
+        )
+        XCTAssertEqual(result.newCount, 12, "second reading: promoted")
+        XCTAssertNil(result.newPending)
+    }
+
     /// Counter-test: once `postCollapseItemCount` returns to reality (via a
     /// follow-up postCollapseDiscovery), the trim step correctly drops
     /// phantoms. This proves the self-correction path works, and isolates

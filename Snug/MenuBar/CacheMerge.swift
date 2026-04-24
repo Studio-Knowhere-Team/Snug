@@ -28,6 +28,38 @@ enum CacheMerge {
         return displayName
     }
 
+    /// Decide whether a newly-observed post-collapse item count should
+    /// replace the current authoritative count, or be held as a pending
+    /// reading until it's confirmed by a second matching observation.
+    ///
+    /// This is the core of the 6→9 bug fix. Previously, any single
+    /// `allPushedCount` observation became `postCollapseItemCount`, and a
+    /// single transient inflation (e.g. `12` during a display reconfig
+    /// where CGWindowList briefly duplicates items) became the stale cap
+    /// in `applyRefreshAfterExpand` — preserving phantoms across the next
+    /// expand.
+    ///
+    /// With the stability gate:
+    ///   - `observed == current`: steady state; clear pending.
+    ///   - `observed == pending`: confirmed; promote.
+    ///   - otherwise: record `observed` as pending, don't update current.
+    ///
+    /// Callers must call this on every post-collapse discovery and carry
+    /// the returned `newPending` forward into the next call.
+    static func promoteCountIfStable(
+        observed: Int,
+        current: Int,
+        pending: Int?
+    ) -> (newCount: Int, newPending: Int?) {
+        if observed == current {
+            return (current, nil)
+        }
+        if let pending, pending == observed {
+            return (observed, nil)
+        }
+        return (current, observed)
+    }
+
     /// Reconcile the cache after a post-collapse discovery pass.
     ///
     /// - Parameters:

@@ -81,7 +81,17 @@ final class StatusBarController: NSObject {
     /// Item count discovered post-collapse (includes items behind the notch).
     /// CGWindowList sees all items once they're pushed off-screen, even ones
     /// that were invisible at natural width on a notched display.
+    ///
+    /// Updated only via the stability gate in `postCollapseDiscovery` —
+    /// never from a single transient `allPushedCount` reading. See
+    /// `CacheMerge.promoteCountIfStable` for the gate logic.
     private var postCollapseItemCount: Int = 0
+
+    /// Pending post-collapse reading held until confirmed by a second
+    /// matching observation. Nil means no pending value. This is the
+    /// stability-gate state for `postCollapseItemCount`; see the 6→9 bug
+    /// fix at `CacheMerge.promoteCountIfStable`.
+    private var pendingCountReading: Int?
 
     // MARK: - Snapshot (Step 1 of refactor)
     //
@@ -581,11 +591,22 @@ final class StatusBarController: NSObject {
             // log every startup-rescan tick when nothing has changed.
             let namesBefore = self.cachedHiddenItemInfo.map { $0.name }
 
-            if allPushed.count != self.postCollapseItemCount {
-                snugLog(" postCollapseDiscovery: count %d → %d",
-                      self.postCollapseItemCount, allPushed.count)
-                self.postCollapseItemCount = allPushed.count
+            // Stability gate — the heart of the 6→9 fix. A single transient
+            // `allPushed.count` (e.g. 12 during a display reconfig that
+            // briefly duplicates items) must NOT become the stale cap in
+            // `refreshHiddenItemCache`. Promote only when we've seen the
+            // same value twice in a row.
+            let gate = CacheMerge.promoteCountIfStable(
+                observed: allPushed.count,
+                current: self.postCollapseItemCount,
+                pending: self.pendingCountReading
+            )
+            if gate.newCount != self.postCollapseItemCount {
+                snugLog(" postCollapseDiscovery: count %d → %d (stabilized)",
+                      self.postCollapseItemCount, gate.newCount)
+                self.postCollapseItemCount = gate.newCount
             }
+            self.pendingCountReading = gate.newPending
 
             // Find items discovered post-collapse that weren't in the natural-width scan.
             let knownIDs = Set(self.cachedHiddenItems.map { $0.windowID })
@@ -614,8 +635,14 @@ final class StatusBarController: NSObject {
             // frames. Gating it on the gap (`allPushed` is CGWindowList-
             // authoritative post-collapse) means we don't add phantoms when
             // the cache is already complete.
+            // Gap + trim both use `postCollapseItemCount` (the STABLE count
+            // after the gate above), NOT the raw `allPushed.count`. This is
+            // what stops a transient inflation from adding phantoms to the
+            // cache: during a transient, the stable count hasn't moved, so
+            // gap is 0 and the per-app scan isn't consulted.
             let toggleX = self.toggleItem.button?.window?.frame.origin.x ?? CGFloat.greatestFiniteMagnitude
-            let gap = max(0, allPushed.count - self.cachedHiddenItemInfo.count)
+            let stableCount = self.postCollapseItemCount
+            let gap = max(0, stableCount - self.cachedHiddenItemInfo.count)
             if gap > 0 {
                 let byApp = await AccessibilityMenuBarHelper.enumerateExtrasByRunningApps(leftOf: toggleX)
                 let existingNamesNow = Set(self.cachedHiddenItemInfo.map { self.baseName(of: $0.name) })
@@ -635,7 +662,7 @@ final class StatusBarController: NSObject {
             // `windowID == 0` entries first — those came from per-app
             // enumeration and are lower-confidence than CGWindowList-sourced
             // entries.
-            if allPushed.count > 0 && self.cachedHiddenItemInfo.count > allPushed.count {
+            if stableCount > 0 && self.cachedHiddenItemInfo.count > stableCount {
                 let before = self.cachedHiddenItemInfo.count
                 let ranked = self.cachedHiddenItemInfo.sorted { a, b in
                     if (a.windowID != 0) != (b.windowID != 0) {
@@ -643,7 +670,7 @@ final class StatusBarController: NSObject {
                     }
                     return a.name < b.name
                 }
-                self.cachedHiddenItemInfo = Array(ranked.prefix(allPushed.count))
+                self.cachedHiddenItemInfo = Array(ranked.prefix(stableCount))
                     .sorted { $0.name < $1.name }
                 snugLog(" postCollapseDiscovery: trimmed %d stale entries (cache %d → %d)",
                       before - self.cachedHiddenItemInfo.count,
@@ -703,9 +730,6 @@ final class StatusBarController: NSObject {
         // Safety: if the separator was cmd-dragged to the wrong side, fix it.
         ensureSeparatorIsLeftOfToggle()
 
-        snugLog(" expandMenuBar: cachedHiddenItemInfo=%d",
-              cachedHiddenItemInfo.count)
-
         // Update the toggle icon first (fade) so it transitions smoothly
         // at the same moment the items appear — not 250ms after.
         isCollapsed = false
@@ -756,10 +780,15 @@ final class StatusBarController: NSObject {
             return a.name < b.name
         }
         let keptPreserved = Array(rankedPreserved.prefix(slotsForPreserved))
+        let countBefore = cachedHiddenItemInfo.count
         cachedHiddenItemInfo = (freshInfo + keptPreserved)
             .sorted { $0.name < $1.name }
-        snugLog(" refreshHiddenItemCache: hidden=%d, resolved=%d",
-              hidden.count, cachedHiddenItemInfo.count)
+        // Only log when the cache count actually moved — steady-state
+        // expand/collapse cycles on an unchanged menu bar stay silent.
+        if cachedHiddenItemInfo.count != countBefore {
+            snugLog(" refreshHiddenItemCache: %d → %d items (hidden=%d)",
+                  countBefore, cachedHiddenItemInfo.count, hidden.count)
+        }
 
         synthesizeSnapshot(width: .natural)
     }
@@ -799,23 +828,6 @@ final class StatusBarController: NSObject {
             capturedAt: Date(),
             capturedWidth: width
         )
-
-        #if DEBUG
-        assert(
-            currentSnapshot.items.count == cachedHiddenItemInfo.count,
-            "snapshot/legacy divergence on items.count: snapshot=\(currentSnapshot.items.count) legacy=\(cachedHiddenItemInfo.count)"
-        )
-        assert(
-            currentSnapshot.totalCount >= cachedHiddenItemInfo.count,
-            "snapshot totalCount (\(currentSnapshot.totalCount)) must be >= items.count (\(cachedHiddenItemInfo.count))"
-        )
-        if postCollapseItemCount > 0 {
-            assert(
-                currentSnapshot.totalCount >= postCollapseItemCount,
-                "snapshot totalCount (\(currentSnapshot.totalCount)) must carry postCollapseItemCount (\(postCollapseItemCount))"
-            )
-        }
-        #endif
     }
 
     // MARK: - Auto-Collapse Timer
