@@ -62,6 +62,31 @@ final class StatusBarController: NSObject {
     /// skip the rediscovery to avoid burning cycles on no-op events.
     private var lastObservedScreenFrames: [CGRect] = []
 
+    // MARK: - Promoted Items
+    //
+    // When the user clicks a hidden item from the right-click context
+    // menu, `activateHiddenItem` Cmd+drags it from its natural-width X
+    // (which may be behind the notch, where its menu would otherwise
+    // open invisibly) to `separatorX − 10` so the menu opens at a
+    // visible position. macOS persists Cmd+drag positions, so without a
+    // counter-action the user's bar layout would be permanently changed
+    // every time they activate a hidden item.
+    //
+    // To restore the original layout, we record each promoted item with
+    // its pre-drag X and replay a reverse Cmd+drag on the next collapse
+    // — *before* the separator extends to push everything off-screen.
+    // Auto-collapse provides the trigger for users who have it on; users
+    // with auto-collapse off get the restore on their next manual
+    // collapse.
+
+    private struct PromotedItem {
+        let windowID: CGWindowID
+        let originalX: CGFloat
+        let menuBarY: CGFloat
+    }
+
+    private var promotedItems: [PromotedItem] = []
+
     /// Width used to push items off-screen (recalculated on screen changes)
     private var collapseLength: CGFloat = 10000
 
@@ -510,6 +535,22 @@ final class StatusBarController: NSObject {
     }
 
     private func collapseMenuBar() {
+        // If any items were promoted to a visible position by the
+        // right-click activate flow, restore them to their original X
+        // *before* the separator extends to push everything off-screen.
+        // The restore Cmd+drag is async (usleep-driven), so we kick off a
+        // task and re-enter `collapseMenuBar` from its tail with the
+        // promoted list cleared.
+        if !promotedItems.isEmpty {
+            let toRestore = promotedItems
+            promotedItems = []
+            Task { @MainActor [weak self] in
+                await self?.restorePromotedPositions(toRestore)
+                self?.collapseMenuBar()
+            }
+            return
+        }
+
         // Safety: if the separator was cmd-dragged to the wrong side, fix it.
         ensureSeparatorIsLeftOfToggle()
 
@@ -987,6 +1028,21 @@ final class StatusBarController: NSObject {
                   freshFrame.midX, sepX, targetX)
 
             if abs(freshFrame.midX - targetX) > 30 {
+                // Remember where this item *was* so the next collapse can
+                // restore it. Skip when windowID is 0 (per-app-resolved
+                // behind-notch entries — we can't track them via
+                // CGWindowList) and when the same windowID is already
+                // promoted (a re-activation before any collapse should not
+                // overwrite the true original X with the post-drag X).
+                if info.windowID != 0,
+                   !self.promotedItems.contains(where: { $0.windowID == info.windowID }) {
+                    self.promotedItems.append(PromotedItem(
+                        windowID: info.windowID,
+                        originalX: freshFrame.midX,
+                        menuBarY: menuBarY
+                    ))
+                }
+
                 // Run the Cmd+drag (which uses usleep internally) on a
                 // background task so the main actor isn't blocked.
                 let moved = await Task.detached(priority: .userInitiated) {
@@ -1061,6 +1117,39 @@ final class StatusBarController: NSObject {
                 stableReads = 0
             }
             lastX = currentX
+        }
+    }
+
+    /// Cmd+drag each previously-promoted item back to the X it was at
+    /// before `activateHiddenItem` moved it next to the separator.
+    /// Called from the top of `collapseMenuBar` so the restore happens
+    /// *before* the separator extends and pushes everything off-screen.
+    ///
+    /// Skips entries whose item is no longer in `itemManager.items`
+    /// (the owning app may have quit while its menu was open) and
+    /// entries whose current X is already within 5 px of the target
+    /// (no-op drags risk macOS's input system rejecting them).
+    private func restorePromotedPositions(_ items: [PromotedItem]) async {
+        guard !items.isEmpty else { return }
+        for item in items {
+            itemManager.refreshItems()
+            guard let current = itemManager.items
+                .first(where: { $0.windowID == item.windowID }) else {
+                continue
+            }
+            let currentX = current.frame.midX
+            if abs(currentX - item.originalX) < 5 { continue }
+
+            snugLog(" restorePromoted: wid=%d %.0f → %.0f",
+                  item.windowID, currentX, item.originalX)
+
+            await Task.detached(priority: .userInitiated) {
+                _ = AccessibilityMenuBarHelper.moveItem(
+                    from: currentX,
+                    to: item.originalX,
+                    menuBarY: item.menuBarY
+                )
+            }.value
         }
     }
 
