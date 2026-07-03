@@ -157,24 +157,10 @@ enum AccessibilityMenuBarHelper {
     static func resolveItems(for items: [MenuBarItem]) -> [HiddenItemInfo] {
         guard isGranted else { return [] }
 
-        // Deduplicate by name, keeping first icon, frame, windowID, and ownerPID per name
-        var seen: [String: (icon: NSImage?, frame: CGRect, windowID: CGWindowID, ownerPID: pid_t)] = [:]
-        var counts: [String: Int] = [:]
-
-        for item in items {
-            if let info = itemInfo(at: item.frame, windowID: item.windowID) {
-                counts[info.name, default: 0] += 1
-                if seen[info.name] == nil {
-                    seen[info.name] = (icon: info.icon, frame: info.frame, windowID: item.windowID, ownerPID: info.ownerPID)
-                }
-            }
+        let entries = items.compactMap { item in
+            itemInfo(at: item.frame, windowID: item.windowID)
         }
-
-        return counts.sorted(by: { $0.key < $1.key }).compactMap { name, count in
-            guard let data = seen[name] else { return nil }
-            let displayName = count > 1 ? "\(name) (\(count))" : name
-            return HiddenItemInfo(name: displayName, icon: data.icon, frame: data.frame, windowID: data.windowID, ownerPID: data.ownerPID)
-        }
+        return CacheMerge.dedupeByName(entries)
     }
 
     // MARK: - AX Hierarchy Enumeration
@@ -244,8 +230,7 @@ enum AccessibilityMenuBarHelper {
         candidates: [CandidateApp],
         systemWidgetNames: Set<String>
     ) -> [HiddenItemInfo] {
-        var seen: [String: (icon: NSImage?, frame: CGRect, ownerPID: pid_t)] = [:]
-        var counts: [String: Int] = [:]
+        var entries: [HiddenItemInfo] = []
 
         for candidate in candidates {
             let axApp = AXUIElementCreateApplication(candidate.pid)
@@ -294,26 +279,19 @@ enum AccessibilityMenuBarHelper {
                 // appear here given we're querying the owning app directly,
                 // but belt-and-braces).
                 guard !systemWidgetNames.contains(name) else { continue }
-                guard name != "Control Centre" && name != "Control Center" else { continue }
+                guard !CacheMerge.isControlCentre(name) else { continue }
 
-                counts[name, default: 0] += 1
-                if seen[name] == nil {
-                    seen[name] = (icon: candidate.icon, frame: frame, ownerPID: candidate.pid)
-                }
+                entries.append(HiddenItemInfo(
+                    name: name,
+                    icon: candidate.icon,
+                    frame: frame,
+                    windowID: 0,
+                    ownerPID: candidate.pid
+                ))
             }
         }
 
-        return counts.sorted(by: { $0.key < $1.key }).compactMap { name, count in
-            guard let data = seen[name] else { return nil }
-            let displayName = count > 1 ? "\(name) (\(count))" : name
-            return HiddenItemInfo(
-                name: displayName,
-                icon: data.icon,
-                frame: data.frame,
-                windowID: 0,
-                ownerPID: data.ownerPID
-            )
-        }
+        return CacheMerge.dedupeByName(entries)
     }
 
     // MARK: - Private
@@ -335,8 +313,7 @@ enum AccessibilityMenuBarHelper {
         let appName = app?.localizedName
 
         let name: String? = {
-            if let appName,
-               appName != "Control Centre" && appName != "Control Center" {
+            if let appName, !CacheMerge.isControlCentre(appName) {
                 return appName
             }
             if let axDesc {

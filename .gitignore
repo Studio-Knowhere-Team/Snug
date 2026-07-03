@@ -30,6 +30,7 @@ tests/
 # Documentation (CLAUDE.md etc.)
 *.md
 !README.md
+!RELEASING.md
 
 # Misc
 *.swp

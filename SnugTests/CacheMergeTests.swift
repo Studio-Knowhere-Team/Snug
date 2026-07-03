@@ -2,12 +2,15 @@ import XCTest
 import AppKit
 @testable import Snug
 
-/// Exercises `CacheMerge` with fixtures that reproduce the 6→9 phantom
-/// inflation observed in production logs on 2026-04-24. The goal of these
-/// tests is to demonstrate — before any architectural refactor — that the
-/// reconciliation logic itself can produce and preserve phantom entries when
-/// a transient `allPushedCount` inflates `postCollapseItemCount` and a
-/// subsequent expand refresh preserves the extras.
+/// Exercises `CacheMerge` with fixtures modeled on the 6→9 phantom inflation
+/// observed in production logs on 2026-04-24: a transient `allPushedCount`
+/// (CGWindowList briefly duplicating items during a display reconfig) must
+/// never become the authoritative count, so per-app phantoms never find a
+/// gap to fill and never survive an expand refresh.
+///
+/// These are the same pure functions the live controller calls from
+/// `postCollapseDiscovery` / `refreshHiddenItemCache` — the tests exercise
+/// shipping code, not a parallel copy.
 final class CacheMergeTests: XCTestCase {
 
     // MARK: - Helpers
@@ -49,7 +52,7 @@ final class CacheMergeTests: XCTestCase {
 
     private func allRunning(_ pid: pid_t) -> Bool { true }
 
-    // MARK: - Baseline
+    // MARK: - Name helpers
 
     func testBaseName_stripsCountSuffix() {
         XCTAssertEqual(CacheMerge.baseName(of: "Dropbox"), "Dropbox")
@@ -58,25 +61,52 @@ final class CacheMergeTests: XCTestCase {
         XCTAssertEqual(CacheMerge.baseName(of: "App (1.5)"), "App (1.5)")  // non-integer: not stripped
     }
 
+    func testIsControlCentre_matchesBothSpellings() {
+        XCTAssertTrue(CacheMerge.isControlCentre("Control Centre"))
+        XCTAssertTrue(CacheMerge.isControlCentre("Control Center"))
+        XCTAssertFalse(CacheMerge.isControlCentre("Control"))
+        XCTAssertFalse(CacheMerge.isControlCentre("Dropbox"))
+    }
+
+    func testDedupeByName_singleEntriesPassThroughSorted() {
+        let result = CacheMerge.dedupeByName([
+            info("Zoom", pid: 2, wid: 20),
+            info("Alfred", pid: 1, wid: 10),
+        ])
+        XCTAssertEqual(result.map(\.name), ["Alfred", "Zoom"])
+    }
+
+    func testDedupeByName_duplicatesGetCountSuffix_keepingFirstEntry() {
+        let result = CacheMerge.dedupeByName([
+            info("Dropbox", pid: 5, wid: 50),
+            info("Dropbox", pid: 5, wid: 51),
+            info("Alfred", pid: 1, wid: 10),
+        ])
+        XCTAssertEqual(result.map(\.name), ["Alfred", "Dropbox (2)"])
+        // First-seen entry wins for metadata.
+        XCTAssertEqual(result.last?.windowID, 50)
+    }
+
+    // MARK: - Post-collapse reconciliation
+
     func testStableState_postCollapseDoesNothing() {
         let cache = sixRealItems()
-        let (next, count) = CacheMerge.applyPostCollapseDiscovery(
+        let next = CacheMerge.applyPostCollapseDiscovery(
             cache: cache,
-            allPushedCount: 6,
+            stableCount: 6,
             newItemsByProcess: [],
             perAppResolved: [],
             isAppRunning: allRunning
         )
         XCTAssertEqual(next.map(\.name), cache.map(\.name))
-        XCTAssertEqual(count, 6)
     }
 
     func testQuitApp_isPruned() {
         let cache = sixRealItems()
         let runningExceptFlux: (pid_t) -> Bool = { $0 != 5780 }
-        let (next, _) = CacheMerge.applyPostCollapseDiscovery(
+        let next = CacheMerge.applyPostCollapseDiscovery(
             cache: cache,
-            allPushedCount: 5,
+            stableCount: 5,
             newItemsByProcess: [],
             perAppResolved: [],
             isAppRunning: runningExceptFlux
@@ -92,95 +122,131 @@ final class CacheMergeTests: XCTestCase {
         let fourReal = Array(sixRealItems().prefix(4))
         let allSix = sixRealItems().map { info($0.name, pid: $0.ownerPID, wid: 0) }
 
-        let (next, count) = CacheMerge.applyPostCollapseDiscovery(
+        let next = CacheMerge.applyPostCollapseDiscovery(
             cache: cache,
-            allPushedCount: 6,
+            stableCount: 6,
             newItemsByProcess: fourReal,
             perAppResolved: allSix,
             isAppRunning: allRunning
         )
         XCTAssertEqual(next.count, 6)
-        XCTAssertEqual(count, 6)
         XCTAssertEqual(Set(next.map(\.name)), Set(sixRealItems().map(\.name)))
     }
 
-    // MARK: - Phantom inflation repro
+    // MARK: - Phantom rejection (the 6→9 fix)
 
-    /// Reproduces the first half of the 6→9 bug: a transient where
-    /// `allPushedCount` is inflated (simulating a display-transition where
-    /// CGWindowList duplicates items across displays) and the per-app scan
-    /// surfaces phantoms (apps whose extras are actually visible elsewhere but
-    /// have zero AX frames during realization). With the current logic, the
-    /// phantoms are admitted into the cache because the gap allows them.
-    func testPostCollapseDiscovery_inflatesCacheOnTransientGap() {
-        let cache = sixRealItems()
-
-        // Display glitch: allPushedCount=12 (duplicated across displays),
-        // per-app scan sees 6 real + 3 phantoms.
-        let (next, count) = CacheMerge.applyPostCollapseDiscovery(
-            cache: cache,
-            allPushedCount: 12,
+    /// The first half of the 6→9 scenario, with the fix in place: a display
+    /// glitch makes CGWindowList briefly report 12 items and the per-app
+    /// scan surface 3 phantoms — but the stability gate holds the stable
+    /// count at 6, so the phantoms find no gap and are rejected.
+    func testTransientInflation_doesNotAdmitPhantoms() {
+        let next = CacheMerge.applyPostCollapseDiscovery(
+            cache: sixRealItems(),
+            stableCount: 6,  // gate held the transient 12 as pending
             newItemsByProcess: [],
             perAppResolved: sixRealItems() + threePhantoms(),
             isAppRunning: allRunning
         )
-
-        // EXPECTED OUTCOME (bug): cache grows to 9 — the 6 real items plus
-        // all 3 phantoms fit under the inflated cap of 12.
-        XCTAssertEqual(next.count, 9,
-            "Baseline repro: transient cap=12 lets phantoms in.")
-        XCTAssertEqual(count, 12,
-            "postCollapseItemCount adopts the transient value.")
-        XCTAssertTrue(next.contains { $0.name == "Folder Peek" })
-        XCTAssertTrue(next.contains { $0.name == "Macs Fan Control" })
-        XCTAssertTrue(next.contains { $0.name == "Natter" })
+        XCTAssertEqual(next.count, 6, "no gap under the stable count → no phantoms")
+        XCTAssertFalse(next.contains { $0.name == "Folder Peek" })
+        XCTAssertFalse(next.contains { $0.name == "Macs Fan Control" })
+        XCTAssertFalse(next.contains { $0.name == "Natter" })
     }
 
-    /// Reproduces the full 6→9 bug across a two-call sequence:
-    ///  (1) postCollapseDiscovery with transient `allPushedCount=12` inflates
-    ///      the cache to 9 items **and** sets `postCollapseItemCount=12`.
-    ///  (2) User expands. `refreshAfterExpand` runs with fresh CGWindowList
-    ///      reporting only 6 real items (`hiddenCount=6`) but the stale
-    ///      `postCollapseItemCount=12` is used as the cap, so 3 phantoms are
-    ///      preserved instead of trimmed.
-    ///
-    /// This matches the production log's sequence exactly.
-    func testInflatedPostCollapseCount_preservesPhantomsOnExpand() {
-        // Phase 1: transient post-collapse inflates cache + count.
-        let (inflatedCache, staleCount) = CacheMerge.applyPostCollapseDiscovery(
+    /// End-to-end sequence of the production 6→9 failure, with the fix:
+    ///  (1) transient observation of 12 is held as pending, not promoted;
+    ///  (2) discovery reconciles against the stable count of 6 → phantoms
+    ///      rejected;
+    ///  (3) the transient clears (observe 6 again) → pending dropped;
+    ///  (4) expand refresh caps at 6 → cache stays at the 6 real items.
+    func testTransientSequence_endToEnd_staysAtSix() {
+        // Tick 1: observe transient 12 → hold current 6, pending 12.
+        let gate1 = CacheMerge.promoteCountIfStable(observed: 12, current: 6, pending: nil)
+        XCTAssertEqual(gate1.newCount, 6)
+        XCTAssertEqual(gate1.newPending, 12)
+
+        // Discovery runs with the STABLE count — phantoms rejected.
+        let cache1 = CacheMerge.applyPostCollapseDiscovery(
             cache: sixRealItems(),
-            allPushedCount: 12,
+            stableCount: gate1.newCount,
             newItemsByProcess: [],
             perAppResolved: sixRealItems() + threePhantoms(),
             isAppRunning: allRunning
         )
-        XCTAssertEqual(inflatedCache.count, 9, "sanity: phase 1 inflated")
-        XCTAssertEqual(staleCount, 12, "sanity: stale count set to transient")
+        XCTAssertEqual(cache1.count, 6)
 
-        // Phase 2: user expands. Reality is 6. freshInfo resolves the 6 real
-        // items. postCollapseItemCount is still the stale 12.
+        // Tick 2: transient gone, observe 6 → pending cleared.
+        let gate2 = CacheMerge.promoteCountIfStable(
+            observed: 6, current: gate1.newCount, pending: gate1.newPending
+        )
+        XCTAssertEqual(gate2.newCount, 6)
+        XCTAssertNil(gate2.newPending)
+
+        // User expands. Refresh caps at 6 — nothing phantom to preserve.
         let refreshed = CacheMerge.applyRefreshAfterExpand(
-            cache: inflatedCache,
+            cache: cache1,
             freshInfo: sixRealItems(),
             hiddenCount: 6,
-            postCollapseItemCount: staleCount  // stale 12
+            postCollapseItemCount: gate2.newCount,
+            isAppRunning: allRunning
         )
-
-        // EXPECTED OUTCOME (bug): cache stays at 9 because the stale cap=12
-        // provides 6 slots for preserved entries, and 3 of the preserved are
-        // the phantoms. The user sees 9 items on badge and in the dropdown,
-        // with 3 that don't exist.
-        XCTAssertEqual(refreshed.count, 9,
-            "BUG: stale postCollapseItemCount lets phantoms survive expand-refresh.")
-        XCTAssertTrue(refreshed.contains { $0.name == "Folder Peek" },
-            "phantom survived")
-        XCTAssertTrue(refreshed.contains { $0.name == "Macs Fan Control" },
-            "phantom survived")
-        XCTAssertTrue(refreshed.contains { $0.name == "Natter" },
-            "phantom survived")
+        XCTAssertEqual(refreshed.count, 6)
+        XCTAssertEqual(Set(refreshed.map(\.name)), Set(sixRealItems().map(\.name)))
     }
 
-    // MARK: - Stability gate (Step 8 — the actual fix)
+    /// Quit-app entries must not survive an expand refresh via the
+    /// preserved-entries path. This covers the window where the user
+    /// expands while postCollapseDiscovery's per-app scan is in flight:
+    /// that scan's merge (including its quit-app prune) is discarded, so
+    /// the expand refresh is the only reconciliation until the next
+    /// collapse.
+    func testRefreshAfterExpand_prunesQuitAppFromPreserved() {
+        let cache = sixRealItems()
+        // Flux (pid 5780) quit while hidden; fresh AX resolves the other 5.
+        let fresh = cache.filter { $0.ownerPID != 5780 }
+        let runningExceptFlux: (pid_t) -> Bool = { $0 != 5780 }
+
+        let refreshed = CacheMerge.applyRefreshAfterExpand(
+            cache: cache,
+            freshInfo: fresh,
+            hiddenCount: 5,
+            postCollapseItemCount: 6,  // stale: gate hasn't seen the quit yet
+            isAppRunning: runningExceptFlux
+        )
+
+        XCTAssertEqual(refreshed.count, 5)
+        XCTAssertFalse(refreshed.contains { $0.ownerPID == 5780 },
+            "quit app pruned even though the stale count left it a slot")
+    }
+
+    /// Self-correction path: if phantoms somehow made it into the cache
+    /// (e.g. state left over from a version without the gate), the trim
+    /// step drops them once the stable count reflects reality — and drops
+    /// the low-confidence `windowID == 0` entries first.
+    func testPostCollapseDiscovery_trimsPhantomsWhenCountSettles() {
+        let inflated = sixRealItems() + threePhantoms()
+
+        let settled = CacheMerge.applyPostCollapseDiscovery(
+            cache: inflated,
+            stableCount: 6,  // transient ended, reality returns
+            newItemsByProcess: [],
+            perAppResolved: [],
+            isAppRunning: allRunning
+        )
+
+        XCTAssertEqual(settled.count, 6,
+            "Trim fires when cache exceeds the stable count.")
+        XCTAssertFalse(settled.contains { $0.name == "Folder Peek" },
+            "phantom trimmed (lowest-confidence: windowID==0).")
+        XCTAssertFalse(settled.contains { $0.name == "Macs Fan Control" },
+            "phantom trimmed.")
+        XCTAssertFalse(settled.contains { $0.name == "Natter" },
+            "phantom trimmed.")
+        // All 6 real items survive.
+        XCTAssertEqual(Set(settled.map(\.name)), Set(sixRealItems().map(\.name)))
+    }
+
+    // MARK: - Stability gate
 
     func testPromoteCountIfStable_noChangeWhenObservedMatchesCurrent() {
         let (newCount, newPending) = CacheMerge.promoteCountIfStable(
@@ -229,8 +295,8 @@ final class CacheMergeTests: XCTestCase {
         XCTAssertEqual(newPending, 15)
     }
 
-    /// End-to-end proof of the bug fix: the exact 6 → 12 → 6 sequence that
-    /// produced the production 6→9 failure no longer inflates `current`.
+    /// The exact 6 → 12 → 6 sequence that produced the production 6→9
+    /// failure no longer inflates `current`.
     func testPromoteCountIfStable_protectsAgainst6to12to6Transient() {
         // Tick 1: see 12 (first time). Hold 6, pending=12.
         var result = CacheMerge.promoteCountIfStable(
@@ -261,35 +327,5 @@ final class CacheMergeTests: XCTestCase {
         )
         XCTAssertEqual(result.newCount, 12, "second reading: promoted")
         XCTAssertNil(result.newPending)
-    }
-
-    /// Counter-test: once `postCollapseItemCount` returns to reality (via a
-    /// follow-up postCollapseDiscovery), the trim step correctly drops
-    /// phantoms. This proves the self-correction path works, and isolates
-    /// the bug to the *refresh* path above.
-    func testPostCollapseDiscovery_trimsPhantomsWhenCountSettles() {
-        // Start from inflated state (as if left over from a previous
-        // transient scan).
-        let inflated = sixRealItems() + threePhantoms()
-
-        let (settled, settledCount) = CacheMerge.applyPostCollapseDiscovery(
-            cache: inflated,
-            allPushedCount: 6,  // transient ended, reality returns
-            newItemsByProcess: [],
-            perAppResolved: [],
-            isAppRunning: allRunning
-        )
-
-        XCTAssertEqual(settled.count, 6,
-            "Trim fires when cache exceeds allPushedCount.")
-        XCTAssertEqual(settledCount, 6)
-        XCTAssertFalse(settled.contains { $0.name == "Folder Peek" },
-            "phantom trimmed (lowest-confidence: windowID==0).")
-        XCTAssertFalse(settled.contains { $0.name == "Macs Fan Control" },
-            "phantom trimmed.")
-        XCTAssertFalse(settled.contains { $0.name == "Natter" },
-            "phantom trimmed.")
-        // All 6 real items survive.
-        XCTAssertEqual(Set(settled.map(\.name)), Set(sixRealItems().map(\.name)))
     }
 }

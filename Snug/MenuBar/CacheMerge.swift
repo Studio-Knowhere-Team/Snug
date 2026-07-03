@@ -6,12 +6,15 @@ import AppKit
 /// tested with scripted fixtures. These functions **must not** touch NSStatusItem,
 /// NSScreen, AX, or CGWindowList — they are pure transforms over value types.
 ///
-/// The two public entry points mirror the two places `cachedHiddenItemInfo` is
+/// The three public entry points mirror the three places hidden-item state is
 /// reconciled in the live controller:
 ///
+/// - `promoteCountIfStable` — the stability gate deciding when a new
+///   post-collapse count observation becomes authoritative.
+///
 /// - `applyPostCollapseDiscovery` — after a collapse, when CGWindowList sees
-///   items that were previously behind the notch. Authoritative count is
-///   `allPushed.count` (from CGWindowList layer 25 post-collapse).
+///   items that were previously behind the notch. The authoritative count is
+///   the **stable** count (post-gate), never a raw transient observation.
 ///
 /// - `applyRefreshAfterExpand` — on expand, when natural-width AX can resolve
 ///   names for visible items. Behind-notch items aren't visible at this width,
@@ -26,6 +29,43 @@ enum CacheMerge {
             return String(displayName[..<range.lowerBound])
         }
         return displayName
+    }
+
+    /// Whether a window-owner name is Control Centre, which hosts third-party
+    /// status items on modern macOS — grouping by its name is meaningless.
+    /// Both spellings appear depending on system locale.
+    static func isControlCentre(_ name: String) -> Bool {
+        name == "Control Centre" || name == "Control Center"
+    }
+
+    /// Group per-window entries by name, keeping the first entry per name and
+    /// rendering duplicates as `"Name (N)"`. Result is sorted by name.
+    ///
+    /// Pass one `HiddenItemInfo` per physical item (name WITHOUT a count
+    /// suffix); this is the single implementation behind the AX position
+    /// scan, the process-metadata scan, and the per-app AX scan.
+    static func dedupeByName(_ entries: [HiddenItemInfo]) -> [HiddenItemInfo] {
+        var seen: [String: HiddenItemInfo] = [:]
+        var counts: [String: Int] = [:]
+
+        for entry in entries {
+            counts[entry.name, default: 0] += 1
+            if seen[entry.name] == nil {
+                seen[entry.name] = entry
+            }
+        }
+
+        return counts.sorted(by: { $0.key < $1.key }).compactMap { name, count in
+            guard let first = seen[name] else { return nil }
+            let displayName = count > 1 ? "\(name) (\(count))" : name
+            return HiddenItemInfo(
+                name: displayName,
+                icon: first.icon,
+                frame: first.frame,
+                windowID: first.windowID,
+                ownerPID: first.ownerPID
+            )
+        }
     }
 
     /// Decide whether a newly-observed post-collapse item count should
@@ -64,24 +104,29 @@ enum CacheMerge {
     ///
     /// - Parameters:
     ///   - cache: current `cachedHiddenItemInfo`.
-    ///   - allPushedCount: `allItemsPushedBySeparator().count` — authoritative.
+    ///   - stableCount: the authoritative count — the output of
+    ///     `promoteCountIfStable`, NOT a raw `allPushedCount` observation.
+    ///     Using the stable count here is what stops a transient inflation
+    ///     from admitting phantoms: during a transient, the stable count
+    ///     hasn't moved, so the gap is 0 and per-app results are ignored.
     ///   - newItemsByProcess: items resolved from the process-based pass
-    ///     (`resolveItemsByProcess`), already deduped.
+    ///     (`resolveItemsByProcess`), already deduped. Merged unconditionally
+    ///     because they're CGWindowList-backed (high confidence).
     ///   - perAppResolved: items resolved from the per-app AX scan
     ///     (`enumerateExtrasByRunningApps`), already deduped. Pass an empty
-    ///     array if the scan wasn't run (gap was zero).
+    ///     array if the scan wasn't run (gap was zero). Only fills the gap
+    ///     between `stableCount` and the cache — lower confidence.
     ///   - isAppRunning: predicate returning true when a `pid_t` belongs to a
     ///     still-running app. Used to prune quit-app entries. Pure function
     ///     so tests can inject a fake running-app set.
-    /// - Returns: the new cache contents **and** the new `postCollapseItemCount`.
-    ///   Callers overwrite both atomically.
+    /// - Returns: the new cache contents.
     static func applyPostCollapseDiscovery(
         cache: [HiddenItemInfo],
-        allPushedCount: Int,
+        stableCount: Int,
         newItemsByProcess: [HiddenItemInfo],
         perAppResolved: [HiddenItemInfo],
         isAppRunning: (pid_t) -> Bool
-    ) -> (cache: [HiddenItemInfo], postCollapseItemCount: Int) {
+    ) -> [HiddenItemInfo] {
         // 1. Prune quit-app entries.
         var next = cache.filter { isAppRunning($0.ownerPID) }
 
@@ -95,10 +140,10 @@ enum CacheMerge {
             next.sort { $0.name < $1.name }
         }
 
-        // 3. Gap-gated per-app merge. Only fill the gap between authoritative
+        // 3. Gap-gated per-app merge. Only fill the gap between the stable
         //    count and what we already have. Prevents transient per-app
         //    phantoms from inflating the cache.
-        let gap = max(0, allPushedCount - next.count)
+        let gap = max(0, stableCount - next.count)
         if gap > 0 && !perAppResolved.isEmpty {
             let existingNamesNow = Set(next.map { baseName(of: $0.name) })
             let newFromApps = perAppResolved.filter {
@@ -111,21 +156,21 @@ enum CacheMerge {
             }
         }
 
-        // 4. Trim cache if it's overshot the authoritative count. Prefer
-        //    dropping `windowID == 0` entries first (per-app-scan origin;
-        //    lower confidence than CGWindowList-sourced entries with real IDs).
-        if allPushedCount > 0 && next.count > allPushedCount {
+        // 4. Trim cache if it's overshot the stable count. Prefer dropping
+        //    `windowID == 0` entries first (per-app-scan origin; lower
+        //    confidence than CGWindowList-sourced entries with real IDs).
+        if stableCount > 0 && next.count > stableCount {
             let ranked = next.sorted { a, b in
                 if (a.windowID != 0) != (b.windowID != 0) {
                     return a.windowID != 0
                 }
                 return a.name < b.name
             }
-            next = Array(ranked.prefix(allPushedCount))
+            next = Array(ranked.prefix(stableCount))
                 .sorted { $0.name < $1.name }
         }
 
-        return (cache: next, postCollapseItemCount: allPushedCount)
+        return next
     }
 
     /// Reconcile the cache on expand.
@@ -137,21 +182,27 @@ enum CacheMerge {
     ///     On notched displays this undercounts (behind-notch items have no
     ///     window at natural width), which is why we also consult
     ///     `postCollapseItemCount`.
-    ///   - postCollapseItemCount: last-known authoritative count. May be stale
-    ///     (pre-existing bug: can be inflated by a transient display event).
+    ///   - postCollapseItemCount: last-known authoritative count. Protected
+    ///     by the stability gate, so a transient display event cannot
+    ///     inflate it (see `promoteCountIfStable`).
+    ///   - isAppRunning: predicate returning true when a `pid_t` belongs to a
+    ///     still-running app. Prunes quit-app entries that would otherwise
+    ///     survive an entire expanded session — post-collapse discovery also
+    ///     prunes, but it can be skipped when the user expands mid-scan.
     /// - Returns: the new cache contents.
     static func applyRefreshAfterExpand(
         cache: [HiddenItemInfo],
         freshInfo: [HiddenItemInfo],
         hiddenCount: Int,
-        postCollapseItemCount: Int
+        postCollapseItemCount: Int,
+        isAppRunning: (pid_t) -> Bool
     ) -> [HiddenItemInfo] {
-        // Preserve prior entries whose names aren't in freshInfo. These are
-        // typically behind-notch items that need to carry over — but can also
-        // be phantoms left from a previous transient.
+        // Preserve prior entries whose names aren't in freshInfo and whose
+        // owning app is still running. The name misses are typically
+        // behind-notch items that need to carry over.
         let freshNames = Set(freshInfo.map { baseName(of: $0.name) })
         let preserved = cache.filter {
-            !freshNames.contains(baseName(of: $0.name))
+            !freshNames.contains(baseName(of: $0.name)) && isAppRunning($0.ownerPID)
         }
 
         // Cap at the target count. Prefer hiddenCount on the notched MBP case

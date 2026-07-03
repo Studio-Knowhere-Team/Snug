@@ -34,6 +34,14 @@ final class StatusBarController: NSObject {
     private var isToggling = false
     private var isActivatingItem = false
 
+    /// True while `restorePromotedPositions`' synthetic drags are in flight.
+    /// Collapse must not proceed mid-drag: auto-hide, the heartbeat, and
+    /// screen changes all call `collapseMenuBar` directly, and extending the
+    /// separator to collapseLength while an item is being dragged would drop
+    /// it at an arbitrary X that macOS then persists. Set before the restore
+    /// task starts; cleared just before it re-enters `collapseMenuBar`.
+    private var isRestoring = false
+
     /// Coalesces rapid `NSWorkspace` launch/terminate notifications into a
     /// single refresh. Set on each event, cancelled on the next, and fired
     /// when ~250 ms of quiet have elapsed. Using `DispatchWorkItem` rather
@@ -94,8 +102,11 @@ final class StatusBarController: NSObject {
 
     // MARK: - Smart Expansion
 
-    /// Natural positions of hidden items captured from fully-expanded state
-    private var cachedNaturalPositions: [(windowID: CGWindowID, naturalX: CGFloat)] = []
+    /// Whether the natural-width caches (`cachedHiddenItems`,
+    /// `cachedHiddenItemInfo`) have been captured since the last event that
+    /// could invalidate item positions (startup, screen change). When false,
+    /// the next collapse re-captures before extending the separator.
+    private var hasCapturedNaturalState = false
 
     /// Cached hidden items for AX name resolution on right-click
     private var cachedHiddenItems: [MenuBarItem] = []
@@ -118,17 +129,17 @@ final class StatusBarController: NSObject {
     /// fix at `CacheMerge.promoteCountIfStable`.
     private var pendingCountReading: Int?
 
-    // MARK: - Snapshot (Step 1 of refactor)
+    // MARK: - Snapshot
     //
-    // Shadow of the legacy `cached*` fields. Populated on expand via
-    // `synthesizeSnapshotAfterExpand()`; not yet read by any consumer
-    // (that's Step 3). Carries a sticky `resolvedNames` ledger so behind-
-    // notch names survive screen changes and natural-width scans.
+    // Atomic value-type view of the hidden-item state, rebuilt via
+    // `synthesizeSnapshot` whenever the cached fields change. Consumers
+    // (badge icon, right-click menu) read this instead of the individual
+    // cached fields so they can never observe a torn mid-merge state.
     //
     // INVARIANT (see MenuBarSnapshot doc): `totalCount` must reflect a
-    // stable reading, never a single transient value. This is not yet
-    // enforced by a write gate (that's Step 2); for now we seed it from
-    // `postCollapseItemCount` which carries the legacy behaviour.
+    // stable reading, never a single transient value. This is upheld by
+    // seeding it from `postCollapseItemCount`, which only changes through
+    // the `CacheMerge.promoteCountIfStable` gate.
 
     private(set) var currentSnapshot: MenuBarSnapshot = .empty
 
@@ -167,7 +178,7 @@ final class StatusBarController: NSObject {
         NSStatusBar.system.removeStatusItem(separatorItem)
         separatorItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = separatorItem.button {
-            button.image = Self.makeSeparatorIcon()
+            button.image = StatusBarIcon.separator()
         }
         registerOwnWindowIDs()
     }
@@ -191,12 +202,12 @@ final class StatusBarController: NSObject {
 
         // Configure separator — left half-circle  (
         if let button = separatorItem.button {
-            button.image = Self.makeSeparatorIcon()
+            button.image = StatusBarIcon.separator()
         }
 
         // Configure toggle button
         if let button = toggleItem.button {
-            button.image = Self.makeCollapsedIcon(count: 0)
+            button.image = StatusBarIcon.collapsed(count: 0)
             button.target = self
             button.action = #selector(toggleButtonPressed(_:))
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -252,8 +263,7 @@ final class StatusBarController: NSObject {
             // so the badge count and dropdown are populated immediately.
             self.itemManager.refreshItems()
             let hidden = self.itemsLeftOfSeparator()
-            self.cachedNaturalPositions = hidden
-                .map { (windowID: $0.windowID, naturalX: $0.frame.minX) }
+            self.hasCapturedNaturalState = true
             self.cachedHiddenItems = hidden
             self.cachedHiddenItemInfo = AccessibilityMenuBarHelper.resolveItems(for: hidden)
             snugLog(" setup: resolved %d items at natural width: %@",
@@ -300,128 +310,6 @@ final class StatusBarController: NSObject {
             startupRescanTimer = nil
             snugLog("startupRescan: finished")
         }
-    }
-
-    // MARK: - Icons
-
-    private static let circleR: CGFloat = 6
-    private static let circleCY: CGFloat = 9
-    private static let iconLW: CGFloat = 1.5
-
-    /// Left half-circle  (
-    private static func makeSeparatorIcon() -> NSImage {
-        let image = NSImage(size: NSSize(width: 9, height: 18), flipped: false) { _ in
-            NSColor.black.setStroke()
-
-            let path = NSBezierPath()
-            path.lineWidth = iconLW
-            path.lineCapStyle = .round
-            path.appendArc(withCenter: NSPoint(x: 7, y: circleCY),
-                           radius: circleR,
-                           startAngle: 90, endAngle: 270)
-            path.stroke()
-            return true
-        }
-        image.isTemplate = true
-        return image
-    }
-
-    /// Full outlined circle  ○
-    private static func makeExpandedIcon() -> NSImage {
-        let d = circleR * 2
-        let w = d + 4
-        let cx = w / 2
-        let image = NSImage(size: NSSize(width: w, height: 18), flipped: false) { _ in
-            NSColor.black.setStroke()
-
-            let path = NSBezierPath(ovalIn: NSRect(x: cx - circleR, y: circleCY - circleR,
-                                                    width: d, height: d))
-            path.lineWidth = iconLW
-            path.stroke()
-            return true
-        }
-        image.isTemplate = true
-        return image
-    }
-
-    /// Toggle icon when collapsed: left half-circle + filled circle.
-    /// The arc radius matches the filled circle so they look like a pair.
-    ///   count == 0 → ( + small filled solid circle
-    ///   count  > 0 → ( + filled circle with count cut out
-    private static func makeCollapsedIcon(count: Int) -> NSImage {
-        let pad: CGFloat = 1   // padding on each side
-        let gap: CGFloat = 1   // space between arc right edge and filled circle left edge
-        let h: CGFloat = 18
-        let cy = h / 2
-
-        if count <= 0 {
-            let r = circleR                          // 6 — both arc and fill
-            let arcCX = pad + r                      // arc center; rightmost point of arc
-            let filledCX = arcCX + gap + r           // filled circle center
-            let w = filledCX + r + pad               // total image width
-
-            let image = NSImage(size: NSSize(width: w, height: h), flipped: false) { _ in
-                // Left half-circle ( — matching radius
-                NSColor.black.setStroke()
-                let arc = NSBezierPath()
-                arc.lineWidth = iconLW
-                arc.lineCapStyle = .round
-                arc.appendArc(withCenter: NSPoint(x: arcCX, y: cy),
-                              radius: r, startAngle: 90, endAngle: 270)
-                arc.stroke()
-
-                // Filled circle
-                NSColor.black.setFill()
-                NSBezierPath(ovalIn: NSRect(x: filledCX - r, y: cy - r,
-                                            width: r * 2, height: r * 2)).fill()
-                return true
-            }
-            image.isTemplate = true
-            return image
-        }
-
-        let r: CGFloat = 8                          // filled circle radius (original size)
-        let arcHR: CGFloat = 3                       // horizontal radius (narrow)
-        let arcVR = r - 2                            // vertical radius matches filled circle
-        let arcCX = pad + arcHR                      // arc center X
-        let filledCX = arcCX + gap + r               // filled circle center
-        let w = filledCX + r + pad                   // total image width
-
-        let image = NSImage(size: NSSize(width: w, height: h), flipped: false) { _ in
-            // Elliptical arc ( — tall & narrow, peeks from behind the circle
-            NSColor.black.setStroke()
-            let arc = NSBezierPath()
-            arc.appendArc(withCenter: .zero, radius: 1.0,
-                          startAngle: 90, endAngle: 270)
-            var xform = AffineTransform.identity
-            xform.translate(x: arcCX, y: cy)
-            xform.scale(x: arcHR, y: arcVR)
-            arc.transform(using: xform)
-            arc.lineWidth = iconLW
-            arc.lineCapStyle = .round
-            arc.stroke()
-
-            // Filled circle with count
-            NSColor.black.setFill()
-            NSBezierPath(ovalIn: NSRect(x: filledCX - r, y: cy - r,
-                                        width: r * 2, height: r * 2)).fill()
-
-            let text = count > 9 ? "9+" : "\(count)"
-            let attrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .bold),
-                .foregroundColor: NSColor.black,
-            ]
-            let ts = text.size(withAttributes: attrs)
-
-            NSGraphicsContext.current?.compositingOperation = .clear
-            text.draw(at: NSPoint(x: filledCX - ts.width / 2,
-                                  y: cy - ts.height / 2),
-                      withAttributes: attrs)
-            NSGraphicsContext.current?.compositingOperation = .sourceOver
-            return true
-        }
-        image.isTemplate = true
-        return image
     }
 
     // MARK: - Hidden Items
@@ -480,33 +368,24 @@ final class StatusBarController: NSObject {
         }
     }
 
-    // MARK: - Smart Expansion
-
-    /// Briefly go to natural width, capture item positions, then call completion.
-    /// Strip " (N)" suffix from display name for comparison.
-    private func baseName(of displayName: String) -> String {
-        if let range = displayName.range(of: #" \(\d+\)$"#, options: .regularExpression) {
-            return String(displayName[..<range.lowerBound])
-        }
-        return displayName
-    }
-
     // MARK: - Toggle Icon
 
-    /// Count of hidden items for the badge. Prefers the AX-resolved count
-    /// (has names), falls back to the CGWindowList count (works without AX).
+    /// Count of hidden items for the badge: the snapshot's stable physical
+    /// count. This is always >= `items.count` — when AX has only resolved
+    /// names for some of the hidden items (e.g. right after login, or
+    /// behind-notch items pre-discovery), the badge still reflects how many
+    /// items are physically hidden, not how many we can name.
     ///
     /// Reads through `currentSnapshot` so the badge reflects the atomic
     /// state — no torn read between `items.count` and `totalCount`.
     private var hiddenItemCount: Int {
-        let live = currentSnapshot.items.count
-        return live > 0 ? live : currentSnapshot.totalCount
+        currentSnapshot.totalCount
     }
 
     private func updateToggleIcon(animated: Bool = true) {
         let newImage = isCollapsed
-            ? Self.makeCollapsedIcon(count: hiddenItemCount)
-            : Self.makeExpandedIcon()
+            ? StatusBarIcon.collapsed(count: hiddenItemCount)
+            : StatusBarIcon.expanded()
 
         guard let button = toggleItem.button else { return }
 
@@ -535,6 +414,19 @@ final class StatusBarController: NSObject {
     }
 
     private func collapseMenuBar() {
+        // A restore pass is still dragging items back to their original X —
+        // let it finish; it re-enters collapseMenuBar when done. Without
+        // this guard, auto-hide / heartbeat / screen-change calls arriving
+        // mid-restore would extend the separator while a synthetic drag is
+        // in flight, dropping the item at an arbitrary X. The collapse this
+        // caller wanted still happens (the restore tail performs it), so the
+        // request can be dropped — but release isToggling so the button
+        // isn't dead until the deferred collapse clears it.
+        guard !isRestoring else {
+            isToggling = false
+            return
+        }
+
         // If any items were promoted to a visible position by the
         // right-click activate flow, restore them to their original X
         // *before* the separator extends to push everything off-screen.
@@ -544,8 +436,10 @@ final class StatusBarController: NSObject {
         if !promotedItems.isEmpty {
             let toRestore = promotedItems
             promotedItems = []
+            isRestoring = true
             Task { @MainActor [weak self] in
                 await self?.restorePromotedPositions(toRestore)
+                self?.isRestoring = false
                 self?.collapseMenuBar()
             }
             return
@@ -554,18 +448,17 @@ final class StatusBarController: NSObject {
         // Safety: if the separator was cmd-dragged to the wrong side, fix it.
         ensureSeparatorIsLeftOfToggle()
 
-        snugLog(" collapseMenuBar: isCollapsed=%d, cachedNaturalPositions=%d, cachedHiddenItems=%d, cachedHiddenItemInfo=%d",
+        snugLog(" collapseMenuBar: isCollapsed=%d, hasCapturedNaturalState=%d, cachedHiddenItems=%d, cachedHiddenItemInfo=%d",
               isCollapsed ? 1 : 0,
-              cachedNaturalPositions.count, cachedHiddenItems.count, cachedHiddenItemInfo.count)
+              hasCapturedNaturalState ? 1 : 0, cachedHiddenItems.count, cachedHiddenItemInfo.count)
 
-        // Capture positions before collapse (items at natural width).
-        if !isCollapsed && cachedNaturalPositions.isEmpty {
+        // Capture hidden items before collapse (items at natural width).
+        if !isCollapsed && !hasCapturedNaturalState {
             itemManager.refreshItems()
             let hidden = itemsLeftOfSeparator()
-            cachedNaturalPositions = hidden
-                .map { (windowID: $0.windowID, naturalX: $0.frame.minX) }
+            hasCapturedNaturalState = true
             cachedHiddenItems = hidden
-            snugLog(" collapseMenuBar: captured %d natural positions", hidden.count)
+            snugLog(" collapseMenuBar: captured %d hidden items at natural width", hidden.count)
         }
 
         // Resolve names while items are still on-screen (AX needs visible positions).
@@ -577,7 +470,7 @@ final class StatusBarController: NSObject {
         }
 
         // Capture the snapshot now — items are still at natural width, so
-        // resolvedNames picked up this cycle won't be replaced by a later
+        // names resolved this cycle won't be replaced by a later
         // post-collapse scan that only sees Control-Centre-owned windows.
         synthesizeSnapshot(width: .natural)
 
@@ -614,19 +507,6 @@ final class StatusBarController: NSObject {
             self.itemManager.refreshItems()
             let allPushed = self.allItemsPushedBySeparator()
 
-            // Prune entries whose owning app has quit — their PID is no longer
-            // running, so the menu bar item no longer exists. Without this the
-            // badge stays stale until the next expand/collapse.
-            let beforePrune = self.cachedHiddenItemInfo.count
-            self.cachedHiddenItemInfo.removeAll { info in
-                NSRunningApplication(processIdentifier: info.ownerPID) == nil
-            }
-            if self.cachedHiddenItemInfo.count != beforePrune {
-                snugLog(" postCollapseDiscovery: pruned %d entries for quit apps",
-                      beforePrune - self.cachedHiddenItemInfo.count)
-                self.updateToggleIcon()
-            }
-
             // Snapshot the cache names up front so we can detect real changes
             // and only log when something actually moved — avoids spamming the
             // log every startup-rescan tick when nothing has changed.
@@ -634,9 +514,9 @@ final class StatusBarController: NSObject {
 
             // Stability gate — the heart of the 6→9 fix. A single transient
             // `allPushed.count` (e.g. 12 during a display reconfig that
-            // briefly duplicates items) must NOT become the stale cap in
-            // `refreshHiddenItemCache`. Promote only when we've seen the
-            // same value twice in a row.
+            // briefly duplicates items) must NOT become the authoritative
+            // count. Promote only when we've seen the same value twice in a
+            // row. Everything downstream reconciles against the STABLE count.
             let gate = CacheMerge.promoteCountIfStable(
                 observed: allPushed.count,
                 current: self.postCollapseItemCount,
@@ -648,75 +528,60 @@ final class StatusBarController: NSObject {
                 self.postCollapseItemCount = gate.newCount
             }
             self.pendingCountReading = gate.newPending
+            let stableCount = self.postCollapseItemCount
 
-            // Find items discovered post-collapse that weren't in the natural-width scan.
+            // Resolve items discovered post-collapse that weren't in the
+            // natural-width scan (typically behind-notch items whose windows
+            // only become enumerable once pushed off-screen).
             let knownIDs = Set(self.cachedHiddenItems.map { $0.windowID })
             let newItems = allPushed.filter { !knownIDs.contains($0.windowID) }
+            let newInfo = newItems.isEmpty ? [] : Self.resolveItemsByProcess(newItems)
 
-            if !newItems.isEmpty {
-                let newInfo = Self.resolveItemsByProcess(newItems)
-                let existingNames = Set(self.cachedHiddenItemInfo.map { self.baseName(of: $0.name) })
-                let uniqueNew = newInfo.filter { !existingNames.contains(self.baseName(of: $0.name)) }
-                if !uniqueNew.isEmpty {
-                    snugLog(" postCollapseDiscovery: resolved %d new by process: %@",
-                          uniqueNew.count, uniqueNew.map { $0.name }.joined(separator: ", "))
-                    self.cachedHiddenItemInfo.append(contentsOf: uniqueNew)
-                    self.cachedHiddenItemInfo.sort { $0.name < $1.name }
-                }
+            let isAppRunning: (pid_t) -> Bool = {
+                NSRunningApplication(processIdentifier: $0) != nil
             }
+
+            // Reconcile: prune quit apps, merge CGWindowList-sourced items,
+            // trim any overshoot past the stable count.
+            var merged = CacheMerge.applyPostCollapseDiscovery(
+                cache: self.cachedHiddenItemInfo,
+                stableCount: stableCount,
+                newItemsByProcess: newInfo,
+                perAppResolved: [],
+                isAppRunning: isAppRunning
+            )
 
             // Walk every running app and ask it directly for its own
-            // AXExtrasMenuBar — but ONLY if we're missing names for hidden
-            // items. This is the only path that can name behind-the-notch
-            // items on a notched MBP (CGWindowList reports their owner as
-            // Control Centre, which we skip). The per-app scan is flaky,
-            // though: during display transitions or while a status item is
-            // being realized it will briefly return apps whose extras are
-            // actually *visible* on the right of the separator, with zero AX
-            // frames. Gating it on the gap (`allPushed` is CGWindowList-
-            // authoritative post-collapse) means we don't add phantoms when
-            // the cache is already complete.
-            // Gap + trim both use `postCollapseItemCount` (the STABLE count
-            // after the gate above), NOT the raw `allPushed.count`. This is
-            // what stops a transient inflation from adding phantoms to the
-            // cache: during a transient, the stable count hasn't moved, so
-            // gap is 0 and the per-app scan isn't consulted.
-            let toggleX = self.toggleItem.button?.window?.frame.origin.x ?? CGFloat.greatestFiniteMagnitude
-            let stableCount = self.postCollapseItemCount
-            let gap = max(0, stableCount - self.cachedHiddenItemInfo.count)
+            // AXExtrasMenuBar — but ONLY if we're still missing names for
+            // hidden items. This is the only path that can name
+            // behind-the-notch items on a notched MBP (CGWindowList reports
+            // their owner as Control Centre, which we skip). The per-app
+            // scan is flaky, though: during display transitions or while a
+            // status item is being realized it will briefly return apps
+            // whose extras are actually *visible* on the right of the
+            // separator, with zero AX frames. Gating it on the gap to the
+            // STABLE count means we don't add phantoms when the cache is
+            // already complete: during a transient, the stable count hasn't
+            // moved, so the gap is 0 and the scan isn't consulted.
+            let gap = max(0, stableCount - merged.count)
             if gap > 0 {
-                let byApp = await AccessibilityMenuBarHelper.enumerateExtrasByRunningApps(leftOf: toggleX)
-                let existingNamesNow = Set(self.cachedHiddenItemInfo.map { self.baseName(of: $0.name) })
-                let newFromApps = byApp.filter { !existingNamesNow.contains(self.baseName(of: $0.name)) }
-                let limited = Array(newFromApps.prefix(gap))
-                if !limited.isEmpty {
-                    snugLog(" postCollapseDiscovery: resolved %d new by per-app scan: %@",
-                          limited.count, limited.map { $0.name }.joined(separator: ", "))
-                    self.cachedHiddenItemInfo.append(contentsOf: limited)
-                    self.cachedHiddenItemInfo.sort { $0.name < $1.name }
-                }
+                let toggleX = self.toggleItem.button?.window?.frame.origin.x
+                    ?? CGFloat.greatestFiniteMagnitude
+                let byApp = await AccessibilityMenuBarHelper
+                    .enumerateExtrasByRunningApps(leftOf: toggleX)
+                // The user may have expanded while the scan was running —
+                // its results describe a collapsed bar that no longer exists.
+                guard self.isCollapsed else { return }
+                merged = CacheMerge.applyPostCollapseDiscovery(
+                    cache: merged,
+                    stableCount: stableCount,
+                    newItemsByProcess: [],
+                    perAppResolved: byApp,
+                    isAppRunning: isAppRunning
+                )
             }
 
-            // Trim cache if it's overshot the authoritative count (this
-            // happens when a prior merge ran before the gap-gate, or when
-            // apps drop their extras without quitting). Prefer to drop
-            // `windowID == 0` entries first — those came from per-app
-            // enumeration and are lower-confidence than CGWindowList-sourced
-            // entries.
-            if stableCount > 0 && self.cachedHiddenItemInfo.count > stableCount {
-                let before = self.cachedHiddenItemInfo.count
-                let ranked = self.cachedHiddenItemInfo.sorted { a, b in
-                    if (a.windowID != 0) != (b.windowID != 0) {
-                        return a.windowID != 0  // keep CGWindowList-sourced first
-                    }
-                    return a.name < b.name
-                }
-                self.cachedHiddenItemInfo = Array(ranked.prefix(stableCount))
-                    .sorted { $0.name < $1.name }
-                snugLog(" postCollapseDiscovery: trimmed %d stale entries (cache %d → %d)",
-                      before - self.cachedHiddenItemInfo.count,
-                      before, self.cachedHiddenItemInfo.count)
-            }
+            self.cachedHiddenItemInfo = merged
 
             // Only emit the DONE summary when the cache actually changed.
             let namesAfter = self.cachedHiddenItemInfo.map { $0.name }
@@ -736,35 +601,29 @@ final class StatusBarController: NSObject {
     /// Resolve hidden item info using process metadata (for items not resolvable via AX position).
     /// Used for behind-notch items that are only discoverable post-collapse via CGWindowList.
     private static func resolveItemsByProcess(_ items: [MenuBarItem]) -> [HiddenItemInfo] {
-        var seen: [String: (icon: NSImage?, frame: CGRect, windowID: CGWindowID, ownerPID: pid_t)] = [:]
-        var counts: [String: Int] = [:]
-
-        for item in items {
+        let entries: [HiddenItemInfo] = items.compactMap { item in
             let app = NSRunningApplication(processIdentifier: item.ownerPID)
             let name = app?.localizedName ?? item.ownerName
-            guard !name.isEmpty else { continue }
+            guard !name.isEmpty else { return nil }
             // Skip Control Centre — it hosts third-party items on modern macOS,
             // so grouping by its name is meaningless.
-            guard name != "Control Centre" && name != "Control Center" else { continue }
+            guard !CacheMerge.isControlCentre(name) else { return nil }
             // Skip Window Server — it briefly owns phantom duplicate status-item
             // windows during Control Centre replication events (visible in
             // CGWindowList but not real, user-facing menu bar extras).
-            guard name != "Window Server" else { continue }
+            guard name != "Window Server" else { return nil }
             // Skip system widgets
-            guard !AccessibilityMenuBarHelper.systemWidgetNames.contains(name) else { continue }
+            guard !AccessibilityMenuBarHelper.systemWidgetNames.contains(name) else { return nil }
 
-            counts[name, default: 0] += 1
-            if seen[name] == nil {
-                let icon = app?.icon?.scaled(to: NSSize(width: 16, height: 16))
-                seen[name] = (icon: icon, frame: item.frame, windowID: item.windowID, ownerPID: item.ownerPID)
-            }
+            return HiddenItemInfo(
+                name: name,
+                icon: app?.icon?.scaled(to: NSSize(width: 16, height: 16)),
+                frame: item.frame,
+                windowID: item.windowID,
+                ownerPID: item.ownerPID
+            )
         }
-
-        return counts.sorted(by: { $0.key < $1.key }).compactMap { name, count in
-            guard let data = seen[name] else { return nil }
-            let displayName = count > 1 ? "\(name) (\(count))" : name
-            return HiddenItemInfo(name: displayName, icon: data.icon, frame: data.frame, windowID: data.windowID, ownerPID: data.ownerPID)
-        }
+        return CacheMerge.dedupeByName(entries)
     }
 
     private func expandMenuBar() {
@@ -791,39 +650,29 @@ final class StatusBarController: NSObject {
     }
 
     /// Refresh hidden item caches after expand (items are at natural positions).
+    ///
+    /// Merges fresh discovery with the existing cache, capped at the
+    /// authoritative count (max of `hidden.count` and the last stable
+    /// post-collapse count). Fresh discovery at expanded width can miss
+    /// items that only become visible post-collapse (behind the notch),
+    /// so prior entries are preserved to fill that gap — but never beyond
+    /// the true count. See `CacheMerge.applyRefreshAfterExpand` for the
+    /// merge rules.
     private func refreshHiddenItemCache() {
         itemManager.refreshItems()
         let hidden = itemsLeftOfSeparator()
-        cachedNaturalPositions = hidden
-            .map { (windowID: $0.windowID, naturalX: $0.frame.minX) }
+        hasCapturedNaturalState = true
         cachedHiddenItems = hidden
 
-        // Merge fresh discovery with the existing cache, but cap the result
-        // at the authoritative count (max of `hidden.count` and the last
-        // post-collapse count). Fresh discovery at expanded width can miss
-        // items that only become visible post-collapse (behind the notch),
-        // so we preserve prior entries to fill that gap — but never beyond
-        // the true count. Preserved entries are ranked so that the
-        // highest-confidence (CGWindowList-sourced, `windowID != 0`) ones
-        // survive when trimming. Quit-app pruning happens in
-        // postCollapseDiscovery.
         let freshInfo = AccessibilityMenuBarHelper.resolveItems(for: hidden)
-        let freshNames = Set(freshInfo.map { baseName(of: $0.name) })
-        let preserved = cachedHiddenItemInfo.filter {
-            !freshNames.contains(baseName(of: $0.name))
-        }
-        let target = max(hidden.count, postCollapseItemCount)
-        let slotsForPreserved = max(0, target - freshInfo.count)
-        let rankedPreserved = preserved.sorted { a, b in
-            if (a.windowID != 0) != (b.windowID != 0) {
-                return a.windowID != 0
-            }
-            return a.name < b.name
-        }
-        let keptPreserved = Array(rankedPreserved.prefix(slotsForPreserved))
         let countBefore = cachedHiddenItemInfo.count
-        cachedHiddenItemInfo = (freshInfo + keptPreserved)
-            .sorted { $0.name < $1.name }
+        cachedHiddenItemInfo = CacheMerge.applyRefreshAfterExpand(
+            cache: cachedHiddenItemInfo,
+            freshInfo: freshInfo,
+            hiddenCount: hidden.count,
+            postCollapseItemCount: postCollapseItemCount,
+            isAppRunning: { NSRunningApplication(processIdentifier: $0) != nil }
+        )
         // Only log when the cache count actually moved — steady-state
         // expand/collapse cycles on an unchanged menu bar stay silent.
         if cachedHiddenItemInfo.count != countBefore {
@@ -834,38 +683,14 @@ final class StatusBarController: NSObject {
         synthesizeSnapshot(width: .natural)
     }
 
-    /// Rebuild `currentSnapshot` from the legacy `cached*` fields.
-    ///
-    /// Called from every site that mutates the cached fields. Seeds
-    /// `resolvedNames` from the prior snapshot so names for items missing
-    /// in this scan (e.g. behind the notch when we're at natural width)
-    /// survive in the ledger.
-    ///
-    /// INVARIANT (enforced by DEBUG assertions): after this call returns,
-    /// `currentSnapshot.items.count == cachedHiddenItemInfo.count` and
-    /// `currentSnapshot.totalCount >= cachedHiddenItemInfo.count`. If any
-    /// of these fail in a DEBUG build, a mutation path updated a cached
-    /// field without calling synthesizeSnapshot afterward.
+    /// Rebuild `currentSnapshot` from the cached fields. Must be called by
+    /// every site that mutates `cachedHiddenItemInfo` or
+    /// `postCollapseItemCount` so snapshot readers (badge, right-click
+    /// menu) stay consistent with the caches.
     private func synthesizeSnapshot(width: MenuBarSnapshot.Width) {
-        var positions: [MenuBarSnapshot.StableKey: CGFloat] = [:]
-        for (windowID, naturalX) in cachedNaturalPositions {
-            if let item = cachedHiddenItems.first(where: { $0.windowID == windowID }) {
-                let key = MenuBarSnapshot.StableKey(ownerPID: item.ownerPID)
-                positions[key] = naturalX
-            }
-        }
-
-        var names = currentSnapshot.resolvedNames
-        for info in cachedHiddenItemInfo {
-            let key = MenuBarSnapshot.StableKey(ownerPID: info.ownerPID)
-            names[key] = info.name
-        }
-
         currentSnapshot = MenuBarSnapshot(
             items: cachedHiddenItemInfo,
             totalCount: max(cachedHiddenItemInfo.count, postCollapseItemCount),
-            naturalPositions: positions,
-            resolvedNames: names,
             capturedAt: Date(),
             capturedWidth: width
         )
@@ -1281,8 +1106,8 @@ final class StatusBarController: NSObject {
         // Names can only be resolved at natural (expanded) width, and on wake
         // the app stays collapsed — so clearing the caches here leaves the
         // right-click menu empty until the user manually expand/collapses.
-        // Positions can still be stale, so only drop cachedNaturalPositions.
-        cachedNaturalPositions = []
+        // Positions can still be stale, so force a re-capture on next collapse.
+        hasCapturedNaturalState = false
         synthesizeSnapshot(width: isCollapsed ? .collapsed : .natural)
         isActivatingItem = false
         updateCollapseLength()

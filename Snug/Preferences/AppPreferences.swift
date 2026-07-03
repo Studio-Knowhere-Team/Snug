@@ -5,7 +5,11 @@ import Foundation
 final class AppPreferences {
     static let shared = AppPreferences()
 
-    /// Callback for AppKit code that needs to react to preference changes
+    /// Callback for AppKit code that needs to react to preference changes.
+    /// Single-subscriber by design — StatusBarController owns this slot.
+    /// Assigning here silently displaces any previous observer; if a second
+    /// subscriber is ever needed, replace this with NotificationCenter or a
+    /// callback list.
     var onPreferencesChanged: (() -> Void)?
 
     var isAutoHide: Bool {
